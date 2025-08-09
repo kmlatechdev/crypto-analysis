@@ -144,10 +144,6 @@ class CandleChart {
         this.tradeMarkers = [];
         this.tradeLines = [];
 
-        // Get current time (or last candle time if you prefer)
-        const currentTime = new Date();
-        const maxTimeDiff = 1 * 60 * 1000; // 5 minutes in milliseconds (adjust as needed)
-
         // Sort data by time if not already sorted
         data.sort((a, b) => new Date(a.time) - new Date(b.time));
 
@@ -157,30 +153,21 @@ class CandleChart {
             if (!candle.signal || !candle.signal.type)
                 continue;
 
-            // Skip if we already have a trade for this candle
-            const existingTrade = this.trades.find(t =>
-                    new Date(t.entryTime).getTime() === new Date(candle.time).getTime());
-            if (existingTrade)
-                continue;
-
             // Skip if candle time is too old (missed) from current time
+            const currentTime = new Date();
             const candleTime = new Date(candle.time);
-            const timeDiff = currentTime - candleTime;
-            if (timeDiff > maxTimeDiff) {
+            const maxTimeDiff = 1 * 60 * 1000; // 1 minute in milliseconds
+            if (currentTime - candleTime > maxTimeDiff)
                 continue;
-            }
 
             // Calculate entry price with slippage
             const isBuySignal = candle.signal.type.includes('buy');
             const entryPrice = this.applySlippage(
-                    isBuySignal ? candle.high : candle.low, // Use high for buys, low for sells
+                    isBuySignal ? candle.high : candle.low,
                     isBuySignal);
-            //console.log(entryPrice);
-            // Validate execution price makes sense
-            if (!this.validateExecutionPrice(
-                    candle.signal.price,
-                    entryPrice,
-                    isBuySignal)) {
+
+            // Validate execution price
+            if (!this.validateExecutionPrice(candle.signal.price, entryPrice, isBuySignal)) {
                 console.warn('Invalid execution price detected:', {
                     time: new Date(candle.time).toLocaleString(),
                     signalType: candle.signal.type,
@@ -188,63 +175,131 @@ class CandleChart {
                     executionPrice: entryPrice,
                     isBuy: isBuySignal
                 });
-                continue; // Skip this trade if validation fails
+                continue;
             }
 
             // Handle buy signals
-            // In simulateTrades method, modify the buy signal handling:
             if (isBuySignal) {
-                // Close any existing short position first
-                if (this.currentPosition && this.currentPosition.type === 'sell') {
-                    const exitPrice = this.applySlippage(candle.high, true); // Use high price for short exit
-                    this.closePosition(candle, i, exitPrice, 'signal');
-                }
+                if (this.currentPosition) {
+                    if (this.currentPosition.type === 'sell') {
+                        // Close existing sell position and open new buy position
+                        const exitPrice = this.applySlippage(candle.high, true);
+                        this.closePosition(candle, i, exitPrice, 'signal');
 
-                // Open new long position
-                if (!this.currentPosition) {
-                    // For buy orders, we should use the high price plus slippage
-                    const entryPrice = this.applySlippage(candle.high, true);
+                        // Open new buy position after closing sell
+                        const positionSize = this.calculatePositionSize(entryPrice);
+                        this.currentPosition = {
+                            type: 'buy',
+                            entryPrice: entryPrice,
+                            entryTime: candle.time,
+                            entryCandleIndex: i,
+                            positionSize: positionSize,
+                            stopLoss: entryPrice * (1 - this.tradeSettings.stopLossPercent),
+                            takeProfit: entryPrice * (1 + this.tradeSettings.takeProfitPercent),
+                            commissionPaid: positionSize * entryPrice * this.tradeSettings.commission
+                        };
+                        this.showTradeNotification(this.currentPosition, true);
+                        this.tradeSettings.virtualBalance -= this.currentPosition.commissionPaid;
+                        this.addTradeMarker(candle.time, entryPrice, 'buy', `BUY @ ${entryPrice.toFixed(2)}`);
+                    } else if (this.currentPosition.type === 'buy') {
+                        // Increase existing buy position if another buy signal appears
+                        const additionalSize = this.calculatePositionSize(entryPrice);
+                        const additionalCost = additionalSize * entryPrice;
+                        const additionalCommission = additionalCost * this.tradeSettings.commission;
 
+                        this.currentPosition.positionSize += additionalSize;
+                        this.currentPosition.commissionPaid += additionalCommission;
+                        this.tradeSettings.virtualBalance -= additionalCommission;
+
+                        // Update stop loss and take profit (optional)
+                        this.currentPosition.stopLoss = entryPrice * (1 - this.tradeSettings.stopLossPercent);
+                        this.currentPosition.takeProfit = entryPrice * (1 + this.tradeSettings.takeProfitPercent);
+
+                        this.showTradeNotification({
+                            type: 'buy',
+                            entryPrice: entryPrice,
+                            positionSize: additionalSize,
+                            action: 'added'
+                        }, true);
+                        this.addTradeMarker(candle.time, entryPrice, 'buy-add', `ADD BUY @ ${entryPrice.toFixed(2)}`);
+                    }
+                } else {
+                    // Open new buy position if no position exists
                     const positionSize = this.calculatePositionSize(entryPrice);
-
                     this.currentPosition = {
                         type: 'buy',
-                        entryPrice: entryPrice, // Store actual execution price
+                        entryPrice: entryPrice,
                         entryTime: candle.time,
                         entryCandleIndex: i,
                         positionSize: positionSize,
-                        stopLoss: entryPrice * (1 - this.tradeSettings.stopLossPercent / 100),
-                        takeProfit: entryPrice * (1 + this.tradeSettings.takeProfitPercent / 100),
+                        stopLoss: entryPrice * (1 - this.tradeSettings.stopLossPercent),
+                        takeProfit: entryPrice * (1 + this.tradeSettings.takeProfitPercent),
                         commissionPaid: positionSize * entryPrice * this.tradeSettings.commission
                     };
-                    this.showTradeNotification(this.currentPosition, true); // Add this line
+                    this.showTradeNotification(this.currentPosition, true);
                     this.tradeSettings.virtualBalance -= this.currentPosition.commissionPaid;
                     this.addTradeMarker(candle.time, entryPrice, 'buy', `BUY @ ${entryPrice.toFixed(2)}`);
                 }
             }
             // Handle sell signals
             else if (candle.signal.type.includes('sell')) {
-                // Close any existing long position first
-                if (this.currentPosition && this.currentPosition.type === 'buy') {
-                    const exitPrice = this.applySlippage(candle.low, false);
-                    this.closePosition(candle, i, exitPrice, 'signal');
-                }
+                if (this.currentPosition) {
+                    if (this.currentPosition.type === 'buy') {
+                        // Close existing buy position and open new sell position
+                        const exitPrice = this.applySlippage(candle.low, false);
+                        this.closePosition(candle, i, exitPrice, 'signal');
 
-                // Open new short position
-                if (!this.currentPosition) {
+                        // Open new sell position after closing buy
+                        const positionSize = this.calculatePositionSize(entryPrice);
+                        this.currentPosition = {
+                            type: 'sell',
+                            entryPrice: entryPrice,
+                            entryTime: candle.time,
+                            entryCandleIndex: i,
+                            positionSize: positionSize,
+                            stopLoss: entryPrice * (1 + this.tradeSettings.stopLossPercent),
+                            takeProfit: entryPrice * (1 - this.tradeSettings.takeProfitPercent),
+                            commissionPaid: positionSize * entryPrice * this.tradeSettings.commission
+                        };
+                        this.showTradeNotification(this.currentPosition, true);
+                        this.tradeSettings.virtualBalance -= this.currentPosition.commissionPaid;
+                        this.addTradeMarker(candle.time, entryPrice, 'sell', 'SELL');
+                    } else if (this.currentPosition.type === 'sell') {
+                        // Increase existing sell position if another sell signal appears
+                        const additionalSize = this.calculatePositionSize(entryPrice);
+                        const additionalCost = additionalSize * entryPrice;
+                        const additionalCommission = additionalCost * this.tradeSettings.commission;
+
+                        this.currentPosition.positionSize += additionalSize;
+                        this.currentPosition.commissionPaid += additionalCommission;
+                        this.tradeSettings.virtualBalance -= additionalCommission;
+
+                        // Update stop loss and take profit (optional)
+                        this.currentPosition.stopLoss = entryPrice * (1 + this.tradeSettings.stopLossPercent);
+                        this.currentPosition.takeProfit = entryPrice * (1 - this.tradeSettings.takeProfitPercent);
+
+                        this.showTradeNotification({
+                            type: 'sell',
+                            entryPrice: entryPrice,
+                            positionSize: additionalSize,
+                            action: 'added'
+                        }, true);
+                        this.addTradeMarker(candle.time, entryPrice, 'sell-add', `ADD SELL @ ${entryPrice.toFixed(2)}`);
+                    }
+                } else {
+                    // Open new sell position if no position exists
                     const positionSize = this.calculatePositionSize(entryPrice);
-
                     this.currentPosition = {
                         type: 'sell',
                         entryPrice: entryPrice,
                         entryTime: candle.time,
                         entryCandleIndex: i,
                         positionSize: positionSize,
-                        stopLoss: entryPrice * (1 + this.tradeSettings.stopLossPercent / 100),
-                        takeProfit: entryPrice * (1 - this.tradeSettings.takeProfitPercent / 100),
+                        stopLoss: entryPrice * (1 + this.tradeSettings.stopLossPercent),
+                        takeProfit: entryPrice * (1 - this.tradeSettings.takeProfitPercent),
                         commissionPaid: positionSize * entryPrice * this.tradeSettings.commission
                     };
-                    this.showTradeNotification(this.currentPosition, true); // Add this line
+                    this.showTradeNotification(this.currentPosition, true);
                     this.tradeSettings.virtualBalance -= this.currentPosition.commissionPaid;
                     this.addTradeMarker(candle.time, entryPrice, 'sell', 'SELL');
                 }
@@ -2551,6 +2606,5 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsPopup.classList.remove('active');
         overlay.classList.remove('active');
     });
-
 
 });
