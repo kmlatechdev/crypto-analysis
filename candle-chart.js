@@ -12,6 +12,7 @@ class CandleChart {
         this.takeProfitPercent = 1.25; // 5% take profit
         this.currentPosition = null;
         this.previousPair = this.pair;
+		this.executedSignals = new Set();
 
         this.tradeSettings = {
             stopLossPercent: 0.5, // 2% stop loss
@@ -87,6 +88,8 @@ class CandleChart {
 
     loadTradeData() {
         try {
+			// Clear executed signals when loading new data
+			this.executedSignals = new Set();
             const savedData = localStorage.getItem(`tradeData_${this.pair}`);
             if (savedData) {
                 const tradeData = JSON.parse(savedData);
@@ -127,6 +130,7 @@ class CandleChart {
             this.trades = [];
             this.currentPosition = null;
             this.tradeSettings.virtualBalance = 100000;
+			this.executedSignals = new Set();
             this.performanceMetrics = {
                 totalTrades: 0,
                 winningTrades: 0,
@@ -152,6 +156,18 @@ class CandleChart {
 
             if (!candle.signal || !candle.signal.type)
                 continue;
+			
+			// Create a unique identifier for this signal
+			const signalId = `${candle.time}_${candle.signal.type}`;
+			//console.log(signalId);
+			//console.log(this.executedSignals);
+			// Skip if we've already executed this signal
+			if (this.executedSignals.has(signalId)) {
+				continue;
+			}
+
+			// Mark this signal as executed
+			this.executedSignals.add(signalId);
 
             // Skip if candle time is too old (missed) from current time
             const currentTime = new Date();
