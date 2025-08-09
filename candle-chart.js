@@ -1369,7 +1369,7 @@ class CandleChart {
         this.refreshInterval = setInterval(() => this.loadData(), 30000);
     }
 
-    async loadData(limit = 100) {
+    async loadData(limit = 60) {
         try {
             const binanceTimeframe = this.binanceTimeframes[this.timeframe] || '15m';
             const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${this.pair}&interval=${binanceTimeframe}&limit=${limit}`);
@@ -2551,5 +2551,6 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsPopup.classList.remove('active');
         overlay.classList.remove('active');
     });
+
 
 });
