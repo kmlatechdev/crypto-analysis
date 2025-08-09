@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Professional Candle Chart</title>
+    <link rel="stylesheet" href="candle-chart.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+</head>
+<body>
+
+    <div class="chart-container">
+        <!-- Tab Navigation -->
+        <div class="tab-container">
+            <button class="tab-btn active" data-tab="chart-tab">Chart</button>
+            <button class="tab-btn" data-tab="performance-trades-tab">Performance & Trades</button>
+        </div>
+
+        <!-- Chart Tab -->
+        <div id="chart-tab" class="tab-content active">
+            <div class="chart-header">
+                <div class="header-left">
+                    <div class="pair-selector">
+                        <select id="marketPair">
+                            <option value="BTCUSDT">BTC/USDT</option>
+                            <option value="ETHUSDT">ETH/USDT</option>
+                            <option value="BNBUSDT">BNB/USDT</option>
+                            <option value="SOLUSDT">SOL/USDT</option>
+                            <option value="XRPUSDT">XRP/USDT</option>
+                        </select>
+                    </div>
+                    <div class="current-pair" id="current-pair">BTC/USDT - $0.00</div>
+                    
+                    <div class="timeframe-dropdown">
+                        <button class="dropdown-toggle">
+                            <span id="current-timeframe">1m</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                        </button>
+                        <div class="dropdown-menu">
+                            <button class="dropdown-item active" data-timeframe="1m">1m</button>
+                            <button class="dropdown-item" data-timeframe="5m">5m</button>
+                            <button class="dropdown-item" data-timeframe="15m">15m</button>
+                            <button class="dropdown-item" data-timeframe="1h">1h</button>
+                            <button class="dropdown-item" data-timeframe="4h">4h</button>
+                            <button class="dropdown-item" data-timeframe="1d">1d</button>
+                        </div>
+                    </div>
+					<button class="settings-btn" id="settings-btn">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                </div>
+                <div class="header-right">
+                    <!-- Compact Price Info in One Line -->
+                    <div class="compact-price-bar">
+                        <span class="price-item"><b>O:</b><span id="info-open">-</span></span>
+                        <span class="price-item"><b>H:</b><span id="info-high">-</span></span>
+                        <span class="price-item"><b>L:</b><span id="info-low">-</span></span>
+                        <span class="price-item"><b>C:</b><span id="info-close">-</span></span>
+                        <span class="price-item"><b>V:</b><span id="info-volume">-</span></span>
+                        <span class="indicator-item"><b>ST:</b><span id="info-supertrend">-</span></span>
+                        <span class="indicator-item"><b>SGNL:</b><span id="info-signal">-</span></span>
+                        <span class="indicator-item"><b>RSI:</b><span id="info-rsi">-</span></span>
+                        <span class="indicator-item"><b>MACD:</b><span id="info-macd">-</span></span>
+                        <span class="indicator-item"><b>HG:</b><span id="info-histogram">-</span></span>
+                        <span class="indicator-item"><b>SPRT:</b><span id="info-support">-</span></span>
+                        <span class="indicator-item"><b>RGTNC:</b><span id="info-resistance">-</span></span>
+						<!--<span class="indicator-item"><b>VWAP:</b><span id="info-vwap">-</span></span>
+						<span class="indicator-item"><b>VolMA:</b><span id="info-volume-ma">-</span></span>
+						<span class="indicator-item"><b>EMA20:</b><span id="info-ema20">-</span></span>
+						<span class="indicator-item"><b>EMA50:</b><span id="info-ema50">-</span></span>-->
+                    </div>
+                </div>
+            </div>
+
+            <div id="chart"></div>
+            
+            <div id="rsi-chart" style="display:none"></div>
+            <div id="macd-chart" style="display:none"></div>
+
+            <!-- Indicator Controls Popup -->
+            <div class="overlay" id="settings-overlay"></div>
+            <div class="settings-popup" id="settings-popup">
+                <div class="popup-header">
+                    <h3>Indicator Settings</h3>
+                    <button class="popup-close" id="popup-close">&times;</button>
+                </div>
+                <div class="indicator-controls">
+                    <div class="indicator-group">
+                        <h3><i class="fas fa-wave-square"></i> Supertrend</h3>
+                        <div class="indicator-options">
+                            <label><input type="checkbox" id="supertrend-toggle" checked> Enable</label>
+                            <div>
+                                <label>Period:</label>
+                                <input type="number" id="supertrend-period" value="10" min="1" max="50">
+                            </div>
+                            <div>
+                                <label>Multiplier:</label>
+                                <input type="number" id="supertrend-multiplier" value="3" min="1" max="10" step="0.1">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="indicator-group">
+                        <h3><i class="fas fa-chart-line"></i> RSI</h3>
+                        <div class="indicator-options">
+                            <label><input type="checkbox" id="rsi-toggle" checked> Enable</label>
+                            <div>
+                                <label>Period:</label>
+                                <input type="number" id="rsi-period" value="14" min="1" max="50">
+                            </div>
+                            <div>
+                                <label>Overbought:</label>
+                                <input type="number" id="rsi-overbought" value="70" min="50" max="90">
+                            </div>
+                            <div>
+                                <label>Oversold:</label>
+                                <input type="number" id="rsi-oversold" value="30" min="10" max="50">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="indicator-group">
+                        <h3><i class="fas fa-chart-bar"></i> MACD</h3>
+                        <div class="indicator-options">
+                            <label><input type="checkbox" id="macd-toggle" checked> Enable</label>
+                            <div>
+                                <label>Fast:</label>
+                                <input type="number" id="macd-fast" value="12" min="1" max="50">
+                            </div>
+                            <div>
+                                <label>Slow:</label>
+                                <input type="number" id="macd-slow" value="26" min="1" max="50">
+                            </div>
+                            <div>
+                                <label>Signal:</label>
+                                <input type="number" id="macd-signal" value="9" min="1" max="50">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance & Trades Tab -->
+        <div id="performance-trades-tab" class="tab-content">
+            <div class="combined-tab">
+                <!-- Performance Metrics Section -->
+                <div class="performance-metrics">
+                    <h3><i class="fas fa-chart-pie"></i> Performance Metrics</h3>
+                    <div class="metrics-grid">
+                        <div class="metric-item">
+                            <span class="metric-label">Virtual Balance:</span>
+                            <span class="metric-value" id="virtual-balance">1,00,000.00</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Total Trades:</span>
+                            <span class="metric-value" id="total-trades">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Win Rate:</span>
+                            <span class="metric-value" id="win-rate">0%</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Profit Factor:</span>
+                            <span class="metric-value" id="profit-factor">0.00</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Total P/L:</span>
+                            <span class="metric-value" id="total-pnl">0.00</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Max Drawdown:</span>
+                            <span class="metric-value" id="max-drawdown">0.00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trade History Section -->
+                <div class="trade-section">
+                    <div class="trade-header">
+                        <h3><i class="fas fa-exchange-alt"></i> Trade History</h3>
+                        <div class="trade-actions">
+                            <label class="upload-btn">
+                                <input type="file" id="trade-history-upload" accept=".csv" style="display: none;">
+                                <i class="fas fa-upload"></i> Upload
+                            </label>
+                            <button id="download-trades-btn" class="download-btn">
+                                <i class="fas fa-download"></i> Download
+                            </button>
+							<button id="clear-trades-btn" class="clear-btn">
+								<i class="fas fa-trash"></i> Clear
+							</button>
+                        </div>
+                    </div>
+                    <div class="trade-list-container">
+                        <table class="trade-list">
+                            <thead>
+                                <tr>
+                                    <th>Trade</th>
+                                    <th>Signal</th>
+                                    <th>Entry</th>
+                                    <th>Exit</th>
+                                    <th>Position size</th>
+                                    <th>P/L</th>
+                                    <th>%</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trade-list-body">
+                                <!-- Trades will be populated here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="candle-chart.js"></script>
+</body>
+</html>
