@@ -695,6 +695,7 @@ class CandleChart {
     }
 
     addTradeMarker(time, price, type, labelText) {
+        // Define all possible marker types and their colors
         const colors = {
             'buy': {
                 bg: '#00c176',
@@ -711,29 +712,40 @@ class CandleChart {
             'stop-loss': {
                 bg: '#f44336',
                 text: '#fff'
+            },
+            'buy-add': { // Add this for buy additions
+                bg: '#00c176',
+                text: '#fff'
+            },
+            'sell-add': { // Add this for sell additions
+                bg: '#ff3b30',
+                text: '#fff'
             }
         };
+
+        // Default to buy style if type is unknown
+        const markerStyle = colors[type] || colors['buy'];
 
         this.tradeMarkers.push({
             x: new Date(time),
             y: price,
             marker: {
-                size: type === 'buy' ? 10 : 8,
-                fillColor: colors[type].bg,
+                size: type === 'buy' || type === 'buy-add' ? 10 : 8,
+                fillColor: markerStyle.bg,
                 strokeColor: '#fff',
-                radius: type === 'buy' ? 6 : 4,
-                shape: type === 'buy' ? 'triangle' : 'invertedTriangle',
+                radius: type === 'buy' || type === 'buy-add' ? 6 : 4,
+                shape: type.includes('buy') ? 'triangle' : 'invertedTriangle',
                 cssClass: `apexcharts-trade-marker apexcharts-trade-marker-${type}`
             },
             label: {
                 text: labelText,
                 style: {
-                    color: colors[type].text,
-                    background: colors[type].bg,
+                    color: markerStyle.text,
+                    background: markerStyle.bg,
                     fontSize: '12px',
                     cssClass: 'apexcharts-trade-label'
                 },
-                offsetY: type === 'buy' ? -20 : 20
+                offsetY: type.includes('buy') ? -20 : 20
             }
         });
     }
@@ -1093,7 +1105,7 @@ class CandleChart {
              : '';
 
         const price = isEntry ? trade.entryPrice : trade.exitPrice;
-        const time = new Date(isEntry ? trade.entryTime : trade.exitTime).toLocaleTimeString();
+        const time = new Date().toLocaleTimeString();
 
         const notification = document.createElement('div');
         notification.className = 'candle-notification';
@@ -1125,8 +1137,10 @@ class CandleChart {
                 </div>
                 <div style="display: flex; justify-content: space-between; font-size: 12px;">
                     <div style="opacity: 0.7;">${this.pair} • ${price.toFixed(2)}</div>
-                    <div style="opacity: 0.6;">${time}</div>
                 </div>
+				<div style="display: flex; justify-content: space-between; font-size: 12px;">
+				<div style="opacity: 0.6;">${time}</div>
+				</div>
             </div>
         </div>
         <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, ${color}, transparent);"></div>
@@ -1421,7 +1435,7 @@ class CandleChart {
     startAutoRefresh() {
         if (this.refreshInterval)
             clearInterval(this.refreshInterval);
-        this.refreshInterval = setInterval(() => this.loadData(), 30000);
+        this.refreshInterval = setInterval(() => this.loadData(), 10000);
     }
 
     async loadData(limit = 60) {
