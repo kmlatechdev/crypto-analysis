@@ -8,19 +8,18 @@ class CandleChart {
         this.pair = 'BTCUSDT';
         this.refreshInterval = null;
         this.trades = [];
-        this.stopLossPercent = 0.5; // 2% stop loss
-        this.takeProfitPercent = 1.25; // 5% take profit
         this.currentPosition = null;
         this.previousPair = this.pair;
-		this.executedSignals = new Set();
+        this.executedSignals = new Set();
+        this.signalMarkers = [];
 
         this.tradeSettings = {
-            stopLossPercent: 0.5, // 2% stop loss
+            stopLossPercent: 0.50, // 2% stop loss
             takeProfitPercent: 1.25, // 5% take profit
             positionSizePercent: 10, // Risk 10% of virtual balance per trade
             virtualBalance: 100000, // Starting virtual balance
             commission: 0.001, // 0.1% trading commission
-            slippage: 0.005, // 0.5% price slippage
+            slippage: 0.001, // 0.5% price slippage
             dollerPrice: 93.0
         };
 
@@ -88,8 +87,8 @@ class CandleChart {
 
     loadTradeData() {
         try {
-			// Clear executed signals when loading new data
-			this.executedSignals = new Set();
+            // Clear executed signals when loading new data
+            this.executedSignals = new Set();
             const savedData = localStorage.getItem(`tradeData_${this.pair}`);
             if (savedData) {
                 const tradeData = JSON.parse(savedData);
@@ -130,7 +129,7 @@ class CandleChart {
             this.trades = [];
             this.currentPosition = null;
             this.tradeSettings.virtualBalance = 100000;
-			this.executedSignals = new Set();
+            this.executedSignals = new Set();
             this.performanceMetrics = {
                 totalTrades: 0,
                 winningTrades: 0,
@@ -153,170 +152,215 @@ class CandleChart {
 
         for (let i = 0; i < data.length; i++) {
             const candle = data[i];
-
+			//console.log(candle);
             if (!candle.signal || !candle.signal.type)
                 continue;
-			
-			// Create a unique identifier for this signal
-			const signalId = `${candle.time}_${candle.signal.type}`;
-			//console.log(signalId);
-			//console.log(this.executedSignals);
-			// Skip if we've already executed this signal
-			if (this.executedSignals.has(signalId)) {
-				continue;
-			}
 
-			// Mark this signal as executed
-			this.executedSignals.add(signalId);
+            // Create a unique identifier for this signal
+            const signalId = `${candle.time}_${candle.signal.type}`;
+            if (this.executedSignals.has(signalId)) {
+                continue;
+            }
+            this.executedSignals.add(signalId);
 
-            // Skip if candle time is too old (missed) from current time
+            // Skip if candle time is too old
             const currentTime = new Date();
             const candleTime = new Date(candle.time);
-            const maxTimeDiff = 1 * 60 * 1000; // 1 minute in milliseconds
+            const maxTimeDiff = 1 * 60 * 1000; // 1 minute
             if (currentTime - candleTime > maxTimeDiff)
                 continue;
 
-            // Calculate entry price with slippage
-            const isBuySignal = candle.signal.type.includes('buy');
-            const entryPrice = this.applySlippage(
-                    isBuySignal ? candle.high : candle.low,
-                    isBuySignal);
+            // realistic entry price: use signal.price vs market price (never use future candle high)
+            const isBuySignal = candle.signal.type.toLowerCase().includes('buy');
+            const isSellSignal = candle.signal.type.toLowerCase().includes('sell') || candle.signal.type.toLowerCase().includes('short');
 
-            // Validate execution price
-            if (!this.validateExecutionPrice(candle.signal.price, entryPrice, isBuySignal)) {
-                console.warn('Invalid execution price detected:', {
-                    time: new Date(candle.time).toLocaleString(),
-                    signalType: candle.signal.type,
-                    signalPrice: candle.signal.price,
-                    executionPrice: entryPrice,
-                    isBuy: isBuySignal
-                });
-                continue;
+            const marketPrice = (this.data && this.data.length) ? this.data[this.data.length - 1].close : null;
+            const entryPrice = parseFloat(Number(candle.signal.price).toFixed(8));
+
+            const currentHour = new Date().getHours();
+            const isGoodTradingTime = currentHour >= 9 && currentHour <= 16; // 9 AM - 4 PM UTC
+
+            if (!isGoodTradingTime) {
+                console.log("Skipping signals outside trading hours");
+                //return;
             }
 
-            // Handle buy signals
+            const newStrength = candle.signal.confidence ?? 0;
+
+            // -----------------------
+            // HANDLE BUY SIGNALS
+            // -----------------------
             if (isBuySignal) {
                 if (this.currentPosition) {
+                    // Currently short -> close short then open long
                     if (this.currentPosition.type === 'sell') {
-                        // Close existing sell position and open new buy position
-                        const exitPrice = this.applySlippage(candle.high, true);
+                        const exitPrice = candle.signal.price;
                         this.closePosition(candle, i, exitPrice, 'signal');
 
                         // Open new buy position after closing sell
                         const positionSize = this.calculatePositionSize(entryPrice);
+                        const commissionPaid = positionSize * entryPrice * this.tradeSettings.commission;
+                        const cost = positionSize * entryPrice;
+                        this.tradeSettings.virtualBalance -= (cost + commissionPaid)
+
                         this.currentPosition = {
                             type: 'buy',
                             entryPrice: entryPrice,
                             entryTime: candle.time,
                             entryCandleIndex: i,
                             positionSize: positionSize,
-                            stopLoss: entryPrice * (1 - this.tradeSettings.stopLossPercent),
-                            takeProfit: entryPrice * (1 + this.tradeSettings.takeProfitPercent),
-                            commissionPaid: positionSize * entryPrice * this.tradeSettings.commission
+                            stopLoss: entryPrice * (1 - (this.tradeSettings.stopLossPercent / 100)),
+                            takeProfit: entryPrice * (1 + (this.tradeSettings.takeProfitPercent / 100)),
+                            commissionPaid: commissionPaid,
+                            signalConfidence: newStrength
                         };
                         this.showTradeNotification(this.currentPosition, true);
-                        this.tradeSettings.virtualBalance -= this.currentPosition.commissionPaid;
                         this.addTradeMarker(candle.time, entryPrice, 'buy', `BUY @ ${entryPrice.toFixed(2)}`);
-                    } else if (this.currentPosition.type === 'buy') {
-                        // Increase existing buy position if another buy signal appears
-                        const additionalSize = this.calculatePositionSize(entryPrice);
-                        const additionalCost = additionalSize * entryPrice;
-                        const additionalCommission = additionalCost * this.tradeSettings.commission;
+                    }
+                    // Currently long -> consider adding only if stronger AND in profit
+                    else if (this.currentPosition.type === 'buy') {
+                        const currentPrice = candle.close;
+                        const profitPercent = ((currentPrice - this.currentPosition.entryPrice) / this.currentPosition.entryPrice) * 100;
 
-                        this.currentPosition.positionSize += additionalSize;
-                        this.currentPosition.commissionPaid += additionalCommission;
-                        this.tradeSettings.virtualBalance -= additionalCommission;
+                        if (profitPercent > 0 && newStrength > (this.currentPosition.signalConfidence ?? 0)) {
+                            const additionalSize = this.calculatePositionSize(entryPrice);
+                            const additionalCost = additionalSize * entryPrice;
+                            const additionalCommission = additionalCost * this.tradeSettings.commission;
 
-                        // Update stop loss and take profit (optional)
-                        this.currentPosition.stopLoss = entryPrice * (1 - this.tradeSettings.stopLossPercent);
-                        this.currentPosition.takeProfit = entryPrice * (1 + this.tradeSettings.takeProfitPercent);
+                            this.currentPosition.positionSize += additionalSize;
+                            this.currentPosition.commissionPaid += additionalCommission;
+                            this.tradeSettings.virtualBalance -= (additionalCost + additionalCommission);
 
-                        this.showTradeNotification({
-                            type: 'buy',
-                            entryPrice: entryPrice,
-                            positionSize: additionalSize,
-                            action: 'added'
-                        }, true);
-                        this.addTradeMarker(candle.time, entryPrice, 'buy-add', `ADD BUY @ ${entryPrice.toFixed(2)}`);
+                            // Adjust SL and TP - reduce by half from original distance
+                            const originalSLDistance = (this.currentPosition.entryPrice - this.currentPosition.stopLoss);
+                            const originalTPDistance = (this.currentPosition.takeProfit - this.currentPosition.entryPrice);
+
+                            this.currentPosition.stopLoss = this.currentPosition.entryPrice - (originalSLDistance * 0.5);
+                            this.currentPosition.takeProfit = this.currentPosition.entryPrice + (originalTPDistance * 0.5);
+
+                            this.currentPosition.signalConfidence = newStrength;
+
+                            this.showTradeNotification({
+                                type: 'buy',
+                                entryPrice: entryPrice,
+                                positionSize: additionalSize,
+                                action: 'added (in profit)'
+                            }, true);
+                            this.addTradeMarker(candle.time, entryPrice, 'buy-add',
+`ADD BUY @ ${entryPrice.toFixed(2)} (TP:${this.currentPosition.takeProfit.toFixed(2)}, SL:${this.currentPosition.stopLoss.toFixed(2)})`);
+                        }
                     }
                 } else {
                     // Open new buy position if no position exists
                     const positionSize = this.calculatePositionSize(entryPrice);
+                    const commissionPaid = positionSize * entryPrice * this.tradeSettings.commission;
+                    const cost = positionSize * entryPrice;
+
+                    // Deduct principal + commission
+                    this.tradeSettings.virtualBalance -= (cost + commissionPaid);
+
                     this.currentPosition = {
                         type: 'buy',
                         entryPrice: entryPrice,
                         entryTime: candle.time,
                         entryCandleIndex: i,
                         positionSize: positionSize,
-                        stopLoss: entryPrice * (1 - this.tradeSettings.stopLossPercent),
-                        takeProfit: entryPrice * (1 + this.tradeSettings.takeProfitPercent),
-                        commissionPaid: positionSize * entryPrice * this.tradeSettings.commission
+                        stopLoss: entryPrice * (1 - (this.tradeSettings.stopLossPercent / 100)),
+                        takeProfit: entryPrice * (1 + (this.tradeSettings.takeProfitPercent / 100)),
+                        commissionPaid: commissionPaid,
+                        signalConfidence: newStrength
                     };
                     this.showTradeNotification(this.currentPosition, true);
-                    this.tradeSettings.virtualBalance -= this.currentPosition.commissionPaid;
                     this.addTradeMarker(candle.time, entryPrice, 'buy', `BUY @ ${entryPrice.toFixed(2)}`);
                 }
             }
-            // Handle sell signals
-            else if (candle.signal.type.includes('sell')) {
+
+            // -----------------------
+            // HANDLE SELL SIGNALS
+            // -----------------------
+            else if (isSellSignal) {
                 if (this.currentPosition) {
+                    // Currently long -> close long then open short
                     if (this.currentPosition.type === 'buy') {
-                        // Close existing buy position and open new sell position
-                        const exitPrice = this.applySlippage(candle.low, false);
+                        const exitPrice = candle.signal.price;
                         this.closePosition(candle, i, exitPrice, 'signal');
 
                         // Open new sell position after closing buy
                         const positionSize = this.calculatePositionSize(entryPrice);
+                        const commissionPaid = positionSize * entryPrice * this.tradeSettings.commission;
+                        const cost = positionSize * entryPrice;
+
+                        // Changed: Deduct full cost for sell positions too
+                        this.tradeSettings.virtualBalance -= (cost + commissionPaid);
+
                         this.currentPosition = {
                             type: 'sell',
                             entryPrice: entryPrice,
                             entryTime: candle.time,
                             entryCandleIndex: i,
                             positionSize: positionSize,
-                            stopLoss: entryPrice * (1 + this.tradeSettings.stopLossPercent),
-                            takeProfit: entryPrice * (1 - this.tradeSettings.takeProfitPercent),
-                            commissionPaid: positionSize * entryPrice * this.tradeSettings.commission
+                            stopLoss: entryPrice * (1 + (this.tradeSettings.stopLossPercent / 100)),
+                            takeProfit: entryPrice * (1 - (this.tradeSettings.takeProfitPercent / 100)),
+                            commissionPaid: commissionPaid,
+                            signalConfidence: newStrength
                         };
                         this.showTradeNotification(this.currentPosition, true);
-                        this.tradeSettings.virtualBalance -= this.currentPosition.commissionPaid;
                         this.addTradeMarker(candle.time, entryPrice, 'sell', 'SELL');
-                    } else if (this.currentPosition.type === 'sell') {
-                        // Increase existing sell position if another sell signal appears
-                        const additionalSize = this.calculatePositionSize(entryPrice);
-                        const additionalCost = additionalSize * entryPrice;
-                        const additionalCommission = additionalCost * this.tradeSettings.commission;
+                    }
+                    // Currently short -> consider adding only if stronger AND in profit
+                    else if (this.currentPosition.type === 'sell') {
+                        const currentPrice = candle.close;
+                        const profitPercent = ((this.currentPosition.entryPrice - currentPrice) / this.currentPosition.entryPrice) * 100;
 
-                        this.currentPosition.positionSize += additionalSize;
-                        this.currentPosition.commissionPaid += additionalCommission;
-                        this.tradeSettings.virtualBalance -= additionalCommission;
+                        if (profitPercent > 0 && newStrength > (this.currentPosition.signalConfidence ?? 0)) {
+                            const additionalSize = this.calculatePositionSize(entryPrice);
+                            const additionalCost = additionalSize * entryPrice;
+                            const additionalCommission = additionalCost * this.tradeSettings.commission;
 
-                        // Update stop loss and take profit (optional)
-                        this.currentPosition.stopLoss = entryPrice * (1 + this.tradeSettings.stopLossPercent);
-                        this.currentPosition.takeProfit = entryPrice * (1 - this.tradeSettings.takeProfitPercent);
+                            this.currentPosition.positionSize += additionalSize;
+                            this.currentPosition.commissionPaid += additionalCommission;
+                            this.tradeSettings.virtualBalance += (additionalCost - additionalCommission);
 
-                        this.showTradeNotification({
-                            type: 'sell',
-                            entryPrice: entryPrice,
-                            positionSize: additionalSize,
-                            action: 'added'
-                        }, true);
-                        this.addTradeMarker(candle.time, entryPrice, 'sell-add', `ADD SELL @ ${entryPrice.toFixed(2)}`);
+                            // Adjust SL and TP - reduce by half from original distance
+                            const originalSLDistance = (this.currentPosition.stopLoss - this.currentPosition.entryPrice);
+                            const originalTPDistance = (this.currentPosition.entryPrice - this.currentPosition.takeProfit);
+
+                            this.currentPosition.stopLoss = this.currentPosition.entryPrice + (originalSLDistance * 0.5);
+                            this.currentPosition.takeProfit = this.currentPosition.entryPrice - (originalTPDistance * 0.5);
+
+                            this.currentPosition.signalConfidence = newStrength;
+
+                            this.showTradeNotification({
+                                type: 'sell',
+                                entryPrice: entryPrice,
+                                positionSize: additionalSize,
+                                action: 'added (in profit)'
+                            }, true);
+                            this.addTradeMarker(candle.time, entryPrice, 'sell-add',
+`ADD SELL @ ${entryPrice.toFixed(2)} (TP:${this.currentPosition.takeProfit.toFixed(2)}, SL:${this.currentPosition.stopLoss.toFixed(2)})`);
+                        }
                     }
                 } else {
                     // Open new sell position if no position exists
                     const positionSize = this.calculatePositionSize(entryPrice);
+                    const commissionPaid = positionSize * entryPrice * this.tradeSettings.commission;
+                    const cost = positionSize * entryPrice;
+
+                    // Changed: Deduct full cost for sell positions too
+                    this.tradeSettings.virtualBalance -= (cost + commissionPaid);
+
                     this.currentPosition = {
                         type: 'sell',
                         entryPrice: entryPrice,
                         entryTime: candle.time,
                         entryCandleIndex: i,
                         positionSize: positionSize,
-                        stopLoss: entryPrice * (1 + this.tradeSettings.stopLossPercent),
-                        takeProfit: entryPrice * (1 - this.tradeSettings.takeProfitPercent),
-                        commissionPaid: positionSize * entryPrice * this.tradeSettings.commission
+                        stopLoss: entryPrice * (1 + (this.tradeSettings.stopLossPercent / 100)),
+                        takeProfit: entryPrice * (1 - (this.tradeSettings.takeProfitPercent / 100)),
+                        commissionPaid: commissionPaid,
+                        signalConfidence: newStrength
                     };
                     this.showTradeNotification(this.currentPosition, true);
-                    this.tradeSettings.virtualBalance -= this.currentPosition.commissionPaid;
                     this.addTradeMarker(candle.time, entryPrice, 'sell', 'SELL');
                 }
             }
@@ -330,170 +374,259 @@ class CandleChart {
         this.updatePerformanceMetrics();
         this.saveTradeData();
     }
-    // Add this method to your class
-    validateExecutionPrice(signalPrice, executionPrice, isBuy) {
-        const priceDiff = executionPrice - signalPrice;
-        const maxAllowedDiff = signalPrice * 0.005; // Allow 0.5% deviation
-
-        if (isBuy) {
-            // For buy orders, execution should be >= signal price (within reasonable slippage)
-            return priceDiff >= 0 && priceDiff <= maxAllowedDiff;
-        } else {
-            // For sell orders, execution should be <= signal price (within reasonable slippage)
-            return priceDiff <= 0 && Math.abs(priceDiff) <= maxAllowedDiff;
-        }
-    }
-    // Helper methods for trade simulation
-    applySlippage(price, isBuy) {
-        // For buy orders: price = high + slippage (worse execution)
-        // For sell orders: price = low - slippage (worse execution)
-        const basePrice = isBuy ? price * 1.0005 : price * 0.499; // 0.05% initial adjustment
-        //console.log("price: "+price);
-        // Apply random slippage within configured range
-        const slippageFactor = 1 + (Math.random() * this.tradeSettings.slippage * (isBuy ? 1 : -1));
-        //console.log("slippageFactor: "+slippageFactor);
-        return basePrice;
-    }
 
     calculatePositionSize(entryPrice) {
-        const riskAmount = this.tradeSettings.virtualBalance * (this.tradeSettings.positionSizePercent / 100);
+        const riskAmount = Math.min(
+                this.tradeSettings.virtualBalance * (this.tradeSettings.positionSizePercent / 100),
+                this.tradeSettings.virtualBalance * 0.9 // Never risk more than 90% of balance
+            );
         const positionSize = riskAmount / entryPrice;
-        return parseFloat(positionSize.toFixed(8)); // Round to 8 decimal places for crypto
+        return parseFloat(positionSize.toFixed(8));
     }
 
     async closePosition(candle, candleIndex, exitPrice, exitReason) {
         if (!this.currentPosition)
             return;
 
-        // Validate exit price makes sense for position type
         const isBuyPosition = this.currentPosition.type === 'buy';
-        const isValidExit = this.validateExecutionPrice(
-                isBuyPosition ? candle.low : candle.high, // Expected reference price
-                exitPrice,
-                !isBuyPosition // Inverse because selling a buy = sell order
-            );
+        const posSize = this.currentPosition.positionSize;
+        const entryPrice = this.currentPosition.entryPrice;
+        const entryCommissionPaid = this.currentPosition.commissionPaid || 0;
 
-        if (!isValidExit) {
-            console.error('Invalid exit price detected:', {
-                positionType: this.currentPosition.type,
-                expectedPrice: isBuyPosition ? candle.low : candle.high,
-                actualExit: exitPrice,
-                time: new Date(candle.time).toLocaleString()
-            });
-            return; // Or adjust price to valid range
-        }
+        // Handle partial close for take profit (exit half quantity)
+        if (exitReason === 'take profit') {
+            const halfSize = posSize / 2;
+            const exitCommission = halfSize * exitPrice * this.tradeSettings.commission;
 
-        // Validate exit time is after entry time
-        if (new Date(candle.time) <= new Date(this.currentPosition.entryTime)) {
-            console.warn('Invalid trade exit - exit time before entry time');
+            // Calculate PnL for the half position
+            let pnlAmount = 0;
+            if (isBuyPosition) {
+                // For long position
+                pnlAmount = halfSize * (exitPrice - entryPrice);
+                this.tradeSettings.virtualBalance += (halfSize * exitPrice) - exitCommission;
+            } else {
+                // For short position - return borrowed amount and settle PnL
+                pnlAmount = halfSize * (entryPrice - exitPrice);
+                this.tradeSettings.virtualBalance += pnlAmount - exitCommission;
+            }
+
+            const pnlPercent = (entryPrice > 0) ? (pnlAmount / (halfSize * entryPrice)) * 100 : 0;
+
+            // Create trade record for the half position
+            const trade = {
+                type: this.currentPosition.type,
+                entryPrice: entryPrice,
+                exitPrice: exitPrice,
+                pnlPercent: pnlPercent,
+                pnlAmount: pnlAmount,
+                positionSize: halfSize,
+                entryTime: this.currentPosition.entryTime,
+                entryCandleIndex: this.currentPosition.entryCandleIndex,
+                exitTime: candle.time,
+                exitReason: 'partial take profit',
+                commissions: (entryCommissionPaid * 0.5) + exitCommission,
+                virtualBalanceAfter: this.tradeSettings.virtualBalance
+            };
+
+            this.trades.push(trade);
+
+            // Reduce the current position size by half
+            this.currentPosition.positionSize = halfSize;
+            this.currentPosition.commissionPaid = entryCommissionPaid * 0.5;
+
+            // Show notification & visuals
+            this.showTradeNotification(trade, false);
+            this.addTradeMarker(candle.time, exitPrice, 'take-profit',
+`PARTIAL TP @ ${exitPrice.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)`);
+
+            // Add trade line for the partial close
+            this.addTradeLine({
+                entryPrice: entryPrice,
+                entryTime: this.currentPosition.entryTime,
+                entryCandleIndex: this.currentPosition.entryCandleIndex,
+                positionSize: halfSize
+            }, candle, exitPrice);
+
+            // Update the take profit level for remaining position
+            if (isBuyPosition) {
+                this.currentPosition.takeProfit = exitPrice * 1.01; // Move TP 1% higher for remaining position
+            } else {
+                this.currentPosition.takeProfit = exitPrice * 0.99; // Move TP 1% lower for remaining position
+            }
+
+            this.updateTradeList();
+            this.updatePerformanceMetrics();
+            this.saveTradeData();
             return;
         }
 
-        // Calculate PnL based on actual execution prices
-        const pnlPercent = this.currentPosition.type === 'buy'
-             ? ((exitPrice - this.currentPosition.entryPrice) / this.currentPosition.entryPrice) * 100
-             : ((this.currentPosition.entryPrice - exitPrice) / this.currentPosition.entryPrice) * 100;
+        // Full position close for other exit reasons (stop loss, signal, etc.)
+        const exitCommission = posSize * exitPrice * this.tradeSettings.commission;
+        let pnlAmount = 0;
 
-        const pnlAmount = this.currentPosition.type === 'buy'
-             ? this.currentPosition.positionSize * (exitPrice - this.currentPosition.entryPrice)
-             : this.currentPosition.positionSize * (this.currentPosition.entryPrice - exitPrice);
+        if (isBuyPosition) {
+            pnlAmount = posSize * (exitPrice - entryPrice);
+            this.tradeSettings.virtualBalance += (posSize * exitPrice) - exitCommission;
+        } else {
+            // For short position - return borrowed amount and settle PnL
+            pnlAmount = posSize * (entryPrice - exitPrice);
+            this.tradeSettings.virtualBalance += (posSize * entryPrice) + pnlAmount - exitCommission;
+        }
 
-        const exitCommission = this.currentPosition.positionSize * exitPrice * this.tradeSettings.commission;
+        const pnlPercent = (entryPrice > 0) ? (pnlAmount / (posSize * entryPrice)) * 100 : 0;
 
-        // Update virtual balance
-        this.tradeSettings.virtualBalance +=
-        (this.currentPosition.positionSize * exitPrice) - exitCommission;
-
+        // Create trade record
         const trade = {
             type: this.currentPosition.type,
-            entryPrice: this.currentPosition.entryPrice, // Use actual execution price
+            entryPrice: entryPrice,
             exitPrice: exitPrice,
             pnlPercent: pnlPercent,
             pnlAmount: pnlAmount,
-            positionSize: this.currentPosition.positionSize,
+            positionSize: posSize,
             entryTime: this.currentPosition.entryTime,
             entryCandleIndex: this.currentPosition.entryCandleIndex,
             exitTime: candle.time,
             exitReason: exitReason,
-            commissions: this.currentPosition.commissionPaid + exitCommission
+            commissions: (entryCommissionPaid || 0) + exitCommission,
+            virtualBalanceAfter: this.tradeSettings.virtualBalance
         };
 
         this.trades.push(trade);
-        this.currentPosition = null;
-        this.showTradeNotification(trade, false); // Add this line
+        const positionSnapshot = {
+            entryPrice: trade.entryPrice,
+            entryTime: trade.entryTime,
+            entryCandleIndex: trade.entryCandleIndex,
+            positionSize: trade.positionSize
+        };
 
-        // Update UI
-        this.updateTradeList();
-        this.updatePerformanceMetrics();
-
-        // Add exit marker
+        this.showTradeNotification(trade, false);
         const markerType = exitReason === 'take profit' ? 'take-profit' :
             exitReason === 'stop loss' ? 'stop-loss' : 'sell';
         const labelText = `${exitReason.toUpperCase()} @ ${exitPrice.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)`;
-
         this.addTradeMarker(candle.time, exitPrice, markerType, labelText);
+        this.addTradeLine(positionSnapshot, candle, exitPrice);
 
-        // Add trade line
-        this.addTradeLine(this.currentPosition, candle, exitPrice);
+        // Clear position
+        this.currentPosition = null;
+
+        this.updateTradeList();
+        this.updatePerformanceMetrics();
         this.saveTradeData();
     }
 
     updatePerformanceMetrics() {
-        if (this.trades.length === 0)
+        if (!Array.isArray(this.trades) || this.trades.length === 0) {
+            // Reset metrics when no trades
+            this.performanceMetrics = {
+                totalTrades: 0,
+                winningTrades: 0,
+                losingTrades: 0,
+                winRate: 0,
+                totalPnl: 0,
+                maxDrawdown: 0,
+                profitFactor: 0,
+                averageTradeDuration: 0
+            };
+            this.updatePerformanceUI();
             return;
+        }
 
         let totalProfit = 0;
         let totalLoss = 0;
         let winningTrades = 0;
         let losingTrades = 0;
         let tradeDurations = [];
-        let drawdown = 0;
+        let equityCurve = [this.tradeSettings.virtualBalance]; // Starting balance
+        let peakEquity = this.tradeSettings.virtualBalance;
         let maxDrawdown = 0;
-        let equityHigh = this.tradeSettings.virtualBalance;
 
-        this.trades.forEach(trade => {
-            if (trade.pnlAmount >= 0) {
+        // Process trades in chronological order
+        const sortedTrades = [...this.trades].sort((a, b) =>
+            new Date(a.entryTime) - new Date(b.entryTime));
+
+        sortedTrades.forEach(trade => {
+            // Calculate PnL in dollars
+            const pnlAmount = trade.pnlAmount * this.tradeSettings.dollerPrice;
+
+            if (pnlAmount >= 0) {
                 winningTrades++;
-                totalProfit += trade.pnlAmount;
+                totalProfit += pnlAmount;
             } else {
                 losingTrades++;
-                totalLoss += Math.abs(trade.pnlAmount);
+                totalLoss += Math.abs(pnlAmount);
             }
 
-            const duration = (new Date(trade.exitTime) - new Date(trade.entryTime));
-            tradeDurations.push(duration);
+            // Update equity curve
+            const currentEquity = equityCurve[equityCurve.length - 1] + pnlAmount;
+            equityCurve.push(currentEquity);
 
-            // Calculate drawdown
-            equityHigh = Math.max(equityHigh, this.tradeSettings.virtualBalance);
-            drawdown = equityHigh - this.tradeSettings.virtualBalance;
-            maxDrawdown = Math.max(maxDrawdown, drawdown);
+            // Update peak and drawdown
+            if (currentEquity > peakEquity) {
+                peakEquity = currentEquity;
+            }
+            const drawdown = ((peakEquity - currentEquity) / peakEquity) * 100;
+            if (drawdown > maxDrawdown) {
+                maxDrawdown = drawdown;
+            }
+
+            // Calculate duration in hours
+            const duration = (new Date(trade.exitTime) - new Date(trade.entryTime)) / (1000 * 60 * 60);
+            tradeDurations.push(duration);
         });
 
+        const totalTrades = sortedTrades.length;
+        const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
+
+        // Calculate profit factor (handle division by zero)
+        let profitFactor = 0;
+        if (totalLoss > 0) {
+            profitFactor = totalProfit / totalLoss;
+        } else if (totalProfit > 0) {
+            profitFactor = Infinity;
+        }
+
+        // Calculate average trade duration
+        const avgDuration = tradeDurations.length > 0 ?
+            tradeDurations.reduce((a, b) => a + b, 0) / tradeDurations.length : 0;
+
         this.performanceMetrics = {
-            totalTrades: this.trades.length,
-            winningTrades: winningTrades,
-            losingTrades: losingTrades,
-            winRate: (winningTrades / this.trades.length) * 100,
-            totalPnl: totalProfit - totalLoss,
-            maxDrawdown: maxDrawdown,
-            profitFactor: totalLoss > 0 ? totalProfit / totalLoss : Infinity,
-            averageTradeDuration: tradeDurations.reduce((a, b) => a + b, 0) / tradeDurations.length
+            totalTrades,
+            winningTrades,
+            losingTrades,
+            winRate,
+            totalPnl: equityCurve[equityCurve.length - 1] - this.tradeSettings.virtualBalance,
+            maxDrawdown,
+            profitFactor,
+            averageTradeDuration: avgDuration
         };
 
         this.updatePerformanceUI();
     }
 
     updatePerformanceUI() {
-        document.getElementById('total-trades').textContent = this.performanceMetrics.totalTrades;
-        document.getElementById('win-rate').textContent = this.performanceMetrics.winRate.toFixed(2) + '%';
-        document.getElementById('profit-factor').textContent = this.performanceMetrics.profitFactor.toFixed(2);
-        document.getElementById('total-pnl').textContent = this.performanceMetrics.totalPnl.toFixed(2);
-        document.getElementById('max-drawdown').textContent = this.performanceMetrics.maxDrawdown.toFixed(2);
-        document.getElementById('virtual-balance').textContent = this.tradeSettings.virtualBalance.toFixed(2);
+        const metrics = this.performanceMetrics;
+        const balance = this.tradeSettings.virtualBalance;
 
-        // Format with color based on profit/loss
+        // Format values properly
+        document.getElementById('total-trades').textContent = metrics.totalTrades;
+        document.getElementById('win-rate').textContent = metrics.winRate.toFixed(2) + '%';
+        document.getElementById('profit-factor').textContent = metrics.profitFactor === Infinity ?
+            '∞' : metrics.profitFactor.toFixed(2);
+
+        // Format P/L with proper sign and color
         const totalPnlElement = document.getElementById('total-pnl');
-        totalPnlElement.className = this.performanceMetrics.totalPnl >= 0 ? 'up' : 'down';
+        const pnlText = metrics.totalPnl >= 0 ?
+`+${metrics.totalPnl.toFixed(2)}` :
+            metrics.totalPnl.toFixed(2);
+        totalPnlElement.textContent = pnlText;
+        totalPnlElement.className = metrics.totalPnl >= 0 ? 'up' : 'down';
+
+        // Format max drawdown (should never be negative)
+        document.getElementById('max-drawdown').textContent =
+            Math.max(0, metrics.maxDrawdown).toFixed(2) + '%';
+
+        // Virtual balance should show current balance, not starting balance
+        document.getElementById('virtual-balance').textContent = balance.toFixed(2);
     }
 
     detectCandlestickPatterns(data) {
@@ -504,167 +637,162 @@ class CandleChart {
 
             // Reset pattern
             current.pattern = null;
-            current.patternStrength = 0; // 0-2 scale (0=normal, 1=weak pattern, 2=strong pattern)
+            current.patternStrength = 0; // 0=normal, 1=weak, 2=strong
 
             // Calculate candle metrics
             const currentBody = Math.abs(current.close - current.open);
             const currentRange = current.high - current.low;
             const currentBodyRatio = currentRange > 0 ? currentBody / currentRange : 0;
-
-            const prevBody = Math.abs(previous.close - previous.open);
             const prevRange = previous.high - previous.low;
-            const prevBodyRatio = prevRange > 0 ? prevBody / prevRange : 0;
 
-            // 1. Bullish Engulfing (Strong)
-            if (current.close > current.open &&
+            // Bullish Engulfing (Strong)
+            if (
+                current.close > current.open &&
                 previous.close < previous.open &&
                 current.open < previous.close &&
                 current.close > previous.open) {
                 current.pattern = 'bullish-engulfing';
                 current.patternStrength = 2;
             }
-
-            // 2. Bearish Engulfing (Strong)
-            else if (current.close < current.open &&
+            // Bearish Engulfing (Strong)
+            else if (
+                current.close < current.open &&
                 previous.close > previous.open &&
                 current.open > previous.close &&
                 current.close < previous.open) {
                 current.pattern = 'bearish-engulfing';
                 current.patternStrength = 2;
-            }
+            } else {
+                const lowerShadow = current.open > current.close ? current.close - current.low : current.open - current.low;
+                const upperShadow = current.high - Math.max(current.open, current.close);
 
-            // 3. Hammer (Bullish)
-            const lowerShadow = current.open > current.close ?
-                current.close - current.low : current.open - current.low;
-            const upperShadow = current.high - (current.open > current.close ?
-                    current.open : current.close);
-
-            if (lowerShadow >= 2 * currentBody &&
-                upperShadow <= currentBody * 0.5 &&
-                current.close > current.open &&
-                currentBodyRatio > 0.1) { // Ensure there is a body
-                current.pattern = 'hammer';
-                current.patternStrength = 1;
-            }
-
-            // 4. Shooting Star (Bearish)
-            else if (upperShadow >= 2 * currentBody &&
-                lowerShadow <= currentBody * 0.5 &&
-                current.close < current.open &&
-                currentBodyRatio > 0.1) {
-                current.pattern = 'shooting-star';
-                current.patternStrength = 1;
-            }
-
-            // 5. Morning Star (Strong Bullish)
-            if (twoBefore.close < twoBefore.open && // First candle is bearish
-                Math.abs(previous.close - previous.open) < previous.range * 0.3 && // Small middle candle
-                current.close > current.open && // Third candle is bullish
-                current.close > twoBefore.open) { // Closes above first candle's open
-                current.pattern = 'morning-star';
-                current.patternStrength = 2;
-            }
-
-            // 6. Evening Star (Strong Bearish)
-            else if (twoBefore.close > twoBefore.open && // First candle is bullish
-                Math.abs(previous.close - previous.open) < previous.range * 0.3 && // Small middle candle
-                current.close < current.open && // Third candle is bearish
-                current.close < twoBefore.open) { // Closes below first candle's open
-                current.pattern = 'evening-star';
-                current.patternStrength = 2;
-            }
-
-            // 7. Piercing Line (Bullish)
-            else if (previous.close < previous.open && // Previous was bearish
-                current.close > current.open && // Current is bullish
-                current.open < previous.low && // Opens below previous low
-                current.close > (previous.open + previous.close) / 2) { // Closes above midpoint
-                current.pattern = 'piercing-line';
-                current.patternStrength = 1;
-            }
-
-            // 8. Dark Cloud Cover (Bearish)
-            else if (previous.close > previous.open && // Previous was bullish
-                current.close < current.open && // Current is bearish
-                current.open > previous.high && // Opens above previous high
-                current.close < (previous.open + previous.close) / 2) { // Closes below midpoint
-                current.pattern = 'dark-cloud';
-                current.patternStrength = 1;
-            }
-
-            // 9. Three White Soldiers (Strong Bullish)
-            if (i >= 3 &&
-                data[i - 2].close > data[i - 2].open &&
-                previous.close > previous.open &&
-                current.close > current.open &&
-                current.close > previous.close &&
-                previous.close > data[i - 2].close &&
-                current.open > previous.open &&
-                previous.open > data[i - 2].open) {
-                current.pattern = 'three-white-soldiers';
-                current.patternStrength = 2;
-            }
-
-            // 10. Three Black Crows (Strong Bearish)
-            else if (i >= 3 &&
-                data[i - 2].close < data[i - 2].open &&
-                previous.close < previous.open &&
-                current.close < current.open &&
-                current.close < previous.close &&
-                previous.close < data[i - 2].close &&
-                current.open < previous.open &&
-                previous.open < data[i - 2].open) {
-                current.pattern = 'three-black-crows';
-                current.patternStrength = 2;
-            }
-
-            // 11. Doji (Neutral/Reversal)
-            else if (currentBodyRatio < 0.1 && // Very small body
-                currentRange > 0 && // Has some range
-                (lowerShadow > currentRange * 0.4 ||
-                    upperShadow > currentRange * 0.4)) { // Significant shadow
-                current.pattern = 'doji';
-                current.patternStrength = 1;
-
-                // Dragonfly Doji (Bullish)
-                if (lowerShadow >= currentRange * 0.9) {
-                    current.pattern = 'dragonfly-doji';
+                // Hammer (Bullish)
+                if (
+                    lowerShadow >= 2 * currentBody &&
+                    upperShadow <= currentBody * 0.5 &&
+                    current.close > current.open &&
+                    currentBodyRatio > 0.1) {
+                    current.pattern = 'hammer';
                     current.patternStrength = 1;
                 }
-                // Gravestone Doji (Bearish)
-                else if (upperShadow >= currentRange * 0.9) {
-                    current.pattern = 'gravestone-doji';
+                // Shooting Star (Bearish)
+                else if (
+                    upperShadow >= 2 * currentBody &&
+                    lowerShadow <= currentBody * 0.5 &&
+                    current.close < current.open &&
+                    currentBodyRatio > 0.1) {
+                    current.pattern = 'shooting-star';
                     current.patternStrength = 1;
                 }
-            }
-
-            // 12. Tweezer Top/Bottom (Reversal)
-            if (previous.high === current.high &&
-                previous.close < previous.open &&
-                current.close > current.open) {
-                current.pattern = 'tweezer-bottom';
-                current.patternStrength = 1;
-            } else if (previous.low === current.low &&
-                previous.close > previous.open &&
-                current.close < current.open) {
-                current.pattern = 'tweezer-top';
-                current.patternStrength = 1;
-            }
-
-            // 13. Inverted Hammer (Bullish)
-            if (upperShadow >= 2 * currentBody &&
-                lowerShadow <= currentBody * 0.5 &&
-                current.close > current.open) {
-                current.pattern = 'inverted-hammer';
-                current.patternStrength = 1;
-            }
-
-            // 14. Hanging Man (Bearish)
-            else if (lowerShadow >= 2 * currentBody &&
-                upperShadow <= currentBody * 0.5 &&
-                current.close < current.open) {
-                current.pattern = 'hanging-man';
-                current.patternStrength = 1;
+                // Morning Star (Strong Bullish)
+                else if (
+                    twoBefore.close < twoBefore.open &&
+                    Math.abs(previous.close - previous.open) < prevRange * 0.3 &&
+                    current.close > current.open &&
+                    current.close > twoBefore.open) {
+                    current.pattern = 'morning-star';
+                    current.patternStrength = 2;
+                }
+                // Evening Star (Strong Bearish)
+                else if (
+                    twoBefore.close > twoBefore.open &&
+                    Math.abs(previous.close - previous.open) < prevRange * 0.3 &&
+                    current.close < current.open &&
+                    current.close < twoBefore.open) {
+                    current.pattern = 'evening-star';
+                    current.patternStrength = 2;
+                }
+                // Piercing Line (Bullish)
+                else if (
+                    previous.close < previous.open &&
+                    current.close > current.open &&
+                    current.open < previous.low &&
+                    current.close > (previous.open + previous.close) / 2) {
+                    current.pattern = 'piercing-line';
+                    current.patternStrength = 1;
+                }
+                // Dark Cloud Cover (Bearish)
+                else if (
+                    previous.close > previous.open &&
+                    current.close < current.open &&
+                    current.open > previous.high &&
+                    current.close < (previous.open + previous.close) / 2) {
+                    current.pattern = 'dark-cloud';
+                    current.patternStrength = 1;
+                }
+                // Three White Soldiers (Strong Bullish)
+                else if (
+                    i >= 3 &&
+                    data[i - 2].close > data[i - 2].open &&
+                    previous.close > previous.open &&
+                    current.close > current.open &&
+                    current.close > previous.close &&
+                    previous.close > data[i - 2].close &&
+                    current.open > previous.open &&
+                    previous.open > data[i - 2].open) {
+                    current.pattern = 'three-white-soldiers';
+                    current.patternStrength = 2;
+                }
+                // Three Black Crows (Strong Bearish)
+                else if (
+                    i >= 3 &&
+                    data[i - 2].close < data[i - 2].open &&
+                    previous.close < previous.open &&
+                    current.close < current.open &&
+                    current.close < previous.close &&
+                    previous.close < data[i - 2].close &&
+                    current.open < previous.open &&
+                    previous.open < data[i - 2].open) {
+                    current.pattern = 'three-black-crows';
+                    current.patternStrength = 2;
+                }
+                // Doji (Neutral/Reversal)
+                else if (
+                    currentBodyRatio < 0.1 &&
+                    currentRange > 0 &&
+                    (lowerShadow > currentRange * 0.4 || upperShadow > currentRange * 0.4)) {
+                    current.pattern = 'doji';
+                    current.patternStrength = 1;
+                    if (lowerShadow >= currentRange * 0.9) {
+                        current.pattern = 'dragonfly-doji';
+                        current.patternStrength = 1;
+                    } else if (upperShadow >= currentRange * 0.9) {
+                        current.pattern = 'gravestone-doji';
+                        current.patternStrength = 1;
+                    }
+                }
+                // Tweezer Bottom
+                else if (
+                    previous.high === current.high &&
+                    previous.close < previous.open &&
+                    current.close > current.open) {
+                    current.pattern = 'tweezer-bottom';
+                    current.patternStrength = 1;
+                }
+                // Tweezer Top
+                else if (
+                    previous.low === current.low &&
+                    previous.close > previous.open &&
+                    current.close < current.open) {
+                    current.pattern = 'tweezer-top';
+                    current.patternStrength = 1;
+                }
+                // Inverted Hammer (Bullish)
+                else if (
+                    upperShadow >= 2 * currentBody &&
+                    lowerShadow <= currentBody * 0.5 &&
+                    current.close > current.open) {
+                    current.pattern = 'inverted-hammer';
+                    current.patternStrength = 1;
+                }
+                // Hanging Man (Bearish)
+                else if (
+                    lowerShadow >= 2 * currentBody &&
+                    upperShadow <= currentBody * 0.5 &&
+                    current.close < current.open) {
+                    current.pattern = 'hanging-man';
+                    current.patternStrength = 1;
+                }
             }
         }
     }
@@ -673,38 +801,29 @@ class CandleChart {
         if (!this.currentPosition)
             return;
 
-        // Only check exit conditions if we have a full candle (not the current forming candle)
-        if (candleIndex === this.data.length - 1)
-            return;
-
+        // For long positions
         if (this.currentPosition.type === 'buy') {
-            // Check stop loss for long position (only if candle closes below SL)
-            if (candle.close <= this.currentPosition.stopLoss) {
-                const exitPrice = this.applySlippage(
-                        Math.min(this.currentPosition.stopLoss, candle.close),
-                        false);
+            // Check stop loss (price went below our SL level)
+            if (candle.low <= this.currentPosition.stopLoss) {
+                const exitPrice = this.currentPosition.stopLoss;
                 this.closePosition(candle, candleIndex, exitPrice, 'stop loss');
             }
-            // Check take profit for long position (only if candle closes above TP)
-            else if (candle.close >= this.currentPosition.takeProfit) {
-                const exitPrice = this.applySlippage(
-                        Math.max(this.currentPosition.takeProfit, candle.close),
-                        false);
+            // Check take profit (price went above our TP level)
+            else if (candle.high >= this.currentPosition.takeProfit) {
+                const exitPrice = this.currentPosition.takeProfit;
                 this.closePosition(candle, candleIndex, exitPrice, 'take profit');
             }
-        } else if (this.currentPosition.type === 'sell') {
-            // Check stop loss for short position (only if candle closes above SL)
-            if (candle.close >= this.currentPosition.stopLoss) {
-                const exitPrice = this.applySlippage(
-                        Math.max(this.currentPosition.stopLoss, candle.close),
-                        true);
+        }
+        // For short positions
+        else if (this.currentPosition.type === 'sell') {
+            // Check stop loss (price went above our SL level)
+            if (candle.high >= this.currentPosition.stopLoss) {
+                const exitPrice = this.currentPosition.stopLoss;
                 this.closePosition(candle, candleIndex, exitPrice, 'stop loss');
             }
-            // Check take profit for short position (only if candle closes below TP)
-            else if (candle.close <= this.currentPosition.takeProfit) {
-                const exitPrice = this.applySlippage(
-                        Math.min(this.currentPosition.takeProfit, candle.close),
-                        true);
+            // Check take profit (price went below our TP level)
+            else if (candle.low <= this.currentPosition.takeProfit) {
+                const exitPrice = this.currentPosition.takeProfit;
                 this.closePosition(candle, candleIndex, exitPrice, 'take profit');
             }
         }
@@ -712,6 +831,7 @@ class CandleChart {
 
     addTradeMarker(time, price, type, labelText) {
         // Define all possible marker types and their colors
+		//console.log('Adding trade marker:', { time, price, type, labelText });
         const colors = {
             'buy': {
                 bg: '#00c176',
@@ -879,23 +999,22 @@ class CandleChart {
             const durationMinutes = (new Date(trade.exitTime) - new Date(trade.entryTime)) / 1000 / 60;
 
             row.innerHTML = `
-            <td>${index + 1}</td>
-            <td>${trade.type.toUpperCase()}</td>
-            <td>${trade.entryPrice.toFixed(2)}<br>
-                <small>${new Date(trade.entryTime).toLocaleString()}</small></td>
-            <td>${trade.exitPrice.toFixed(2)}${exitReason}<br>
-                <small>${new Date(trade.exitTime).toLocaleString()}</small></td>
-            <td>${trade.positionSize.toFixed(6)}</td>
-            <td class="${pnlClass}">${trade.pnlAmount >= 0 ? '+' : ''}${trade.pnlAmount.toFixed(2)}</td>
-            <td class="${pnlClass}">${trade.pnlPercent >= 0 ? '+' : ''}${trade.pnlPercent.toFixed(2)}%</td>
-            <td>${Math.floor(durationMinutes)} mins</td>
-        `;
+        <td>${index + 1}</td>
+        <td>${trade.type.toUpperCase()}</td>
+        <td>${trade.entryPrice.toFixed(2)}<br>
+            <small>${new Date(trade.entryTime).toLocaleString()}</small></td>
+        <td>${trade.exitPrice.toFixed(2)}${exitReason}<br>
+            <small>${new Date(trade.exitTime).toLocaleString()}</small></td>
+        <td>${trade.positionSize.toFixed(6)}</td>
+        <td class="${pnlClass}">${trade.pnlAmount >= 0 ? '+' : ''}${(trade.pnlAmount * this.tradeSettings.dollerPrice).toFixed(2)}</td>
+        <td class="${pnlClass}">${trade.pnlPercent >= 0 ? '+' : ''}${trade.pnlPercent.toFixed(2)}%</td>
+        <td>${Math.floor(durationMinutes)} mins</td>
+    `;
 
             tradeListBody.appendChild(row);
         });
 
         // Add current running trade if exists
-        //console.log(this.currentPosition);
         if (this.currentPosition) {
             const row = document.createElement('tr');
             row.classList.add('running-trade');
@@ -914,18 +1033,34 @@ class CandleChart {
                     pnlAmount = this.currentPosition.positionSize * (this.currentPosition.entryPrice - currentPrice) * this.tradeSettings.dollerPrice;
                 }
 
+                // Format SL and TP prices
+                const slPrice = this.currentPosition.stopLoss.toFixed(2);
+                const tpPrice = this.currentPosition.takeProfit.toFixed(2);
+
+                // Calculate distance to SL and TP in percentage
+                const slDistancePct = this.currentPosition.type === 'buy'
+                     ? ((this.currentPosition.entryPrice - this.currentPosition.stopLoss) / this.currentPosition.entryPrice * 100).toFixed(2)
+                     : ((this.currentPosition.stopLoss - this.currentPosition.entryPrice) / this.currentPosition.entryPrice * 100).toFixed(2);
+
+                const tpDistancePct = this.currentPosition.type === 'buy'
+                     ? ((this.currentPosition.takeProfit - this.currentPosition.entryPrice) / this.currentPosition.entryPrice * 100).toFixed(2)
+                     : ((this.currentPosition.entryPrice - this.currentPosition.takeProfit) / this.currentPosition.entryPrice * 100).toFixed(2);
+
                 row.innerHTML = `
-                <td>${sortedTrades.length + 1}</td>
-                <td>${this.currentPosition.type.toUpperCase()}</td>
-                <td>${this.currentPosition.entryPrice.toFixed(2)}<br>
-                    <small>${new Date(this.currentPosition.entryTime).toLocaleString()}</small></td>
-                <td><em>Running...</em><br>
-                    <small>Current: ${currentPrice.toFixed(2)}</small></td>
-                <td>${this.currentPosition.positionSize.toFixed(6)}</td>
-                <td class="${pnlAmount >= 0 ? 'trade-profit' : 'trade-loss'}">${pnlAmount >= 0 ? '+' : ''}${pnlAmount.toFixed(2)}</td>
-                <td class="${pnlPercent >= 0 ? 'trade-profit' : 'trade-loss'}">${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%</td>
-                <td>${Math.floor(durationMinutes)} mins</td>
-            `;
+            <td>${sortedTrades.length + 1}</td>
+            <td>${this.currentPosition.type.toUpperCase()}</td>
+            <td>${this.currentPosition.entryPrice.toFixed(2)}<br>
+                <small>${new Date(this.currentPosition.entryTime).toLocaleString()}</small></td>
+            <td><em>Running...</em><br>
+                <small>Current: ${currentPrice.toFixed(2)}</small><br>
+                <small class="sl-info">SL: ${slPrice} (${slDistancePct}%)</small><br>
+                <small class="tp-info">TP: ${tpPrice} (${tpDistancePct}%)</small>
+            </td>
+            <td>${this.currentPosition.positionSize.toFixed(6)}</td>
+            <td class="${pnlAmount >= 0 ? 'trade-profit' : 'trade-loss'}">${pnlAmount >= 0 ? '+' : ''}${pnlAmount.toFixed(2)}</td>
+            <td class="${pnlPercent >= 0 ? 'trade-profit' : 'trade-loss'}">${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%</td>
+            <td>${Math.floor(durationMinutes)} mins</td>
+        `;
 
                 tradeListBody.appendChild(row);
             }
@@ -1002,7 +1137,7 @@ class CandleChart {
             series: [],
             chart: {
                 type: 'candlestick',
-                height: 400,
+                height: 450,
                 toolbar: {
                     show: true
                 },
@@ -1045,31 +1180,34 @@ class CandleChart {
                     color: '#2a3241'
                 }
             },
-            yaxis: [{
-                    seriesName: this.pair,
-                    tooltip: {
-                        enabled: true
+            // Add to your chart options in initChart()
+            yaxis: {
+                labels: {
+                    formatter: function (val) {
+                        return val.toFixed(2);
                     },
-                    opposite: true,
-                    labels: {
-                        formatter: function (value) {
-                            return parseFloat(value).toFixed(2);
-                        },
-                        style: {
-                            colors: '#e0e3eb',
-                            fontSize: '12px'
-                        }
-                    },
-                    axisBorder: {
-                        show: true,
-                        color: '#2a3241'
-                    },
-                    axisTicks: {
-                        show: true,
-                        color: '#2a3241'
+                    style: {
+                        colors: '#e0e3eb',
+                        fontSize: '11px'
+                    }
+                },
+                axisBorder: {
+                    show: true,
+                    color: '#2a3241'
+                },
+                tooltip: {
+                    enabled: true
+                },
+                crosshairs: {
+                    show: true,
+                    position: 'back',
+                    stroke: {
+                        color: '#3a7bd5',
+                        width: 1,
+                        dashArray: 0
                     }
                 }
-            ],
+            },
             tooltip: {
                 enabled: true,
                 shared: true,
@@ -1454,7 +1592,7 @@ class CandleChart {
         this.refreshInterval = setInterval(() => this.loadData(), 10000);
     }
 
-    async loadData(limit = 60) {
+    async loadData(limit = 120) {
         try {
             const binanceTimeframe = this.binanceTimeframes[this.timeframe] || '15m';
             const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${this.pair}&interval=${binanceTimeframe}&limit=${limit}`);
@@ -1480,6 +1618,7 @@ class CandleChart {
 
             // Sort in ascending order (oldest first)
             newData.sort((a, b) => a.time - b.time);
+
             this.detectCandlestickPatterns(newData);
             // Check if we have a new candle with a pattern
             if (this.data.length > 0 && newData.length > 0) {
@@ -1508,6 +1647,8 @@ class CandleChart {
             this.updateChart();
             this.updateInfoPanel();
             this.updateCurrentPrice();
+            this.updateTradeList();
+            this.updatePerformanceMetrics();
         } catch (error) {
             console.error('Error loading candle data:', error);
             if (!this.refreshInterval) {
@@ -1564,7 +1705,7 @@ class CandleChart {
         const period = this.indicators.supertrend.period;
         const multiplier = this.indicators.supertrend.multiplier;
 
-        // Calculate ATR first
+        // Calculate True Range (TR)
         for (let i = 1; i < data.length; i++) {
             const tr = Math.max(
                     data[i].high - data[i].low,
@@ -1573,7 +1714,7 @@ class CandleChart {
             data[i].tr = tr;
         }
 
-        // Calculate ATR as SMA of TR
+        // Calculate ATR
         for (let i = period; i < data.length; i++) {
             let sumTR = 0;
             for (let j = i - period + 1; j <= i; j++) {
@@ -1582,14 +1723,14 @@ class CandleChart {
             data[i].atr = sumTR / period;
         }
 
-        // Calculate Supertrend with additional confirmation indicators
+        // Calculate Supertrend with simplified logic
         for (let i = period; i < data.length; i++) {
             const hl2 = (data[i].high + data[i].low) / 2;
             const basicUpper = hl2 + multiplier * data[i].atr;
             const basicLower = hl2 - multiplier * data[i].atr;
 
             if (i === period) {
-                // First Supertrend value
+                // Initialize
                 data[i].supertrendUpper = basicUpper;
                 data[i].supertrendLower = basicLower;
                 data[i].supertrendDirection = data[i].close > basicUpper ? 'up' : 'down';
@@ -1604,35 +1745,13 @@ class CandleChart {
                      ? Math.min(basicLower, data[i - 1].supertrendLower)
                      : basicLower;
 
-                // Enhanced trend direction determination with multiple confirmations
-                const bullishConditions = [
-                    data[i].close > data[i].supertrendUpper,
-                    this.indicators.rsi.enabled ? data[i].rsi > this.indicators.rsi.oversold : true,
-                    this.indicators.macd.enabled ? data[i].macd > data[i].signalValue : true,
-                    data[i].close > data[i].vwap,
-                    data[i].close > data[i].ema20,
-                    data[i].volume > data[i].volumeMA * 1.2
-                ].filter(Boolean).length;
-
-                const bearishConditions = [
-                    data[i].close < data[i].supertrendLower,
-                    this.indicators.rsi.enabled ? data[i].rsi < this.indicators.rsi.overbought : true,
-                    this.indicators.macd.enabled ? data[i].macd < data[i].signalValue : true,
-                    data[i].close < data[i].vwap,
-                    data[i].close < data[i].ema20,
-                    data[i].volume > data[i].volumeMA * 1.2
-                ].filter(Boolean).length;
-
-                // Require at least 3 confirmations for trend change
-                if (bullishConditions >= 3) {
+                // Simplified direction change logic
+                if (data[i].close > data[i].supertrendUpper) {
                     data[i].supertrendDirection = 'up';
-                    data[i].supertrendStrength = bullishConditions;
-                } else if (bearishConditions >= 3) {
+                } else if (data[i].close < data[i].supertrendLower) {
                     data[i].supertrendDirection = 'down';
-                    data[i].supertrendStrength = bearishConditions;
                 } else {
                     data[i].supertrendDirection = data[i - 1].supertrendDirection;
-                    data[i].supertrendStrength = 0;
                 }
             }
         }
@@ -1783,92 +1902,141 @@ class CandleChart {
 
     detectSignals(data) {
         const rsiPeriod = this.indicators.rsi.period;
-        const macdPeriod = Math.max(
-                this.indicators.macd.fastPeriod,
-                this.indicators.macd.slowPeriod,
-                this.indicators.macd.signalPeriod);
+        const macdPeriod = Math.max(this.indicators.macd.fastPeriod, this.indicators.macd.slowPeriod, this.indicators.macd.signalPeriod);
         const supertrendPeriod = this.indicators.supertrend.period;
         const minPeriod = Math.max(rsiPeriod, macdPeriod, supertrendPeriod);
+        const MIN_WEIGHTED_SCORE = 4; // aggressive: lower to catch earlier signals
+        const MIN_ATR_RATIO = 0.001; // aggressive: allow lower volatility candles
 
+        //console.log(data);
         for (let i = minPeriod; i < data.length; i++) {
             data[i].signal = {
                 type: null,
                 price: null,
                 value: null,
                 signalValue: null,
-                source: null
+                source: null,
+                confidence: 0
             };
 
-            if (i < minPeriod + 5)
-                continue; // Skip early candles
+            if (i < minPeriod + 3)
+                continue; // shave a couple candles for speed (aggressive)
 
-            // 1️⃣ Supertrend Direction
+            const rsi = data[i].rsi;
+            const macd = data[i].macd;
+            const signalVal = data[i].signalValue;
+            const ema20 = data[i].ema20,
+            ema50 = data[i].ema50;
+            const vwap = data[i].vwap,
+            volumeMA = data[i].volumeMA;
+
             const isSupertrendBullish = data[i].supertrendDirection === 'up';
             const isSupertrendBearish = data[i].supertrendDirection === 'down';
+            const isRSIBullish = (typeof rsi === 'number') ? (rsi < this.indicators.rsi.oversold) : false;
+            const isRSIBearish = (typeof rsi === 'number') ? (rsi > this.indicators.rsi.overbought) : false;
+            const isMACDBullish = (typeof macd === 'number' && typeof signalVal === 'number') ? (macd > signalVal) : false;
+            const isMACDBearish = (typeof macd === 'number' && typeof signalVal === 'number') ? (macd < signalVal) : false;
+            const isVolumeSpiking = (typeof volumeMA === 'number') ? (data[i].volume > volumeMA * 1.4) : false; // slightly looser
+            const isAboveVWAP = (typeof vwap === 'number') ? (data[i].close > vwap) : false;
+            const isBelowVWAP = (typeof vwap === 'number') ? (data[i].close < vwap) : false;
+            const isEMABullish = (typeof ema20 === 'number' && typeof ema50 === 'number') ? (ema20 > ema50) : false;
+            const isEMABearish = (typeof ema20 === 'number' && typeof ema50 === 'number') ? (ema20 < ema50) : false;
+            const isEMACrossBullish = (typeof ema20 === 'number' && typeof ema50 === 'number') ? (ema20 > ema50 && data[i - 1].ema20 <= data[i - 1].ema50) : false;
+            const isEMACrossBearish = (typeof ema20 === 'number' && typeof ema50 === 'number') ? (ema20 < ema50 && data[i - 1].ema20 >= data[i - 1].ema50) : false;
+            const isBullishPattern = !!data[i].pattern && ['hammer', 'bullish-engulfing', 'morning-star', 'piercing-line'].includes(data[i].pattern);
+            const isBearishPattern = !!data[i].pattern && ['shooting-star', 'bearish-engulfing', 'evening-star', 'dark-cloud'].includes(data[i].pattern);
 
-            // 2️⃣ RSI Condition
-            const isRSIBullish = (data[i].rsi < this.indicators.rsi.oversold);
-            const isRSIBearish = (data[i].rsi > this.indicators.rsi.overbought);
-
-            // 3️⃣ MACD Crossover
-            const isMACDBullish = (data[i].macd > data[i].signalValue);
-            const isMACDBearish = (data[i].macd < data[i].signalValue);
-
-            // 4️⃣ Volume Spike (50% above average)
-            const isVolumeSpiking = (data[i].volume > data[i].volumeMA * 1.5);
-
-            // 5️⃣ VWAP Position
-            const isAboveVWAP = (data[i].close > data[i].vwap);
-            const isBelowVWAP = (data[i].close < data[i].vwap);
-
-            // 6️⃣ EMA Crossover (20 > 50 = Bullish)
-            const isEMABullish = (data[i].ema20 > data[i].ema50);
-            const isEMABearish = (data[i].ema20 < data[i].ema50);
-
-            // ✅ STRONG BULLISH (All indicators agree)
-            if (isSupertrendBullish && isRSIBullish && isMACDBullish && isVolumeSpiking && isAboveVWAP && isEMABullish) {
-                data[i].signal.type = 'strong-buy';
-                data[i].signal.source = 'multi-confirmation';
+            // weighted scoring (aggressive weights)
+            let bullishScore = 0;
+            let bearishScore = 0;
+            // supertrend becomes very decisive (weight 4)
+            if (isSupertrendBullish)
+                bullishScore += 4;
+            if (isSupertrendBearish)
+                bearishScore += 4;
+            // EMA cross is still strong (weight 2)
+            if (isEMACrossBullish)
+                bullishScore += 2;
+            if (isEMACrossBearish)
+                bearishScore += 2;
+            // secondary confirmations (weight 1)
+            if (isMACDBullish)
+                bullishScore += 1;
+            if (isMACDBearish)
+                bearishScore += 1;
+            if (isRSIBullish)
+                bullishScore += 1;
+            if (isRSIBearish)
+                bearishScore += 1;
+            if (isAboveVWAP)
+                bullishScore += 1;
+            if (isBelowVWAP)
+                bearishScore += 1;
+            if (isVolumeSpiking) {
+                bullishScore += 1;
+                bearishScore += 1;
             }
-            // ✅ STRONG BEARISH (All indicators agree)
-            else if (isSupertrendBearish && isRSIBearish && isMACDBearish && isVolumeSpiking && isBelowVWAP && isEMABearish) {
-                data[i].signal.type = 'strong-sell';
-                data[i].signal.source = 'multi-confirmation';
-            }
-            // ⚠️ WEAK BULLISH (Partial confirmation)
-            else if (isSupertrendBullish && isMACDBullish && isAboveVWAP) {
-                data[i].signal.type = 'weak-buy';
-                data[i].signal.source = 'partial-confirmation';
-            }
-            // ⚠️ WEAK BEARISH (Partial confirmation)
-            else if (isSupertrendBearish && isMACDBearish && isBelowVWAP) {
-                data[i].signal.type = 'weak-sell';
-                data[i].signal.source = 'partial-confirmation';
+            if (isBullishPattern)
+                bullishScore += 1;
+            if (isBearishPattern)
+                bearishScore += 1;
+
+            const atrRatio = data[i].atr && data[i].close ? (data[i].atr / data[i].close) : 0;
+
+            //console.log(bullishScore,bearishScore);
+            // core checks
+            const bullishHasCore = isSupertrendBullish || isEMACrossBullish;
+            const bearishHasCore = isSupertrendBearish || isEMACrossBearish;
+
+            // aggressive core-override: if Supertrend is bullish and score >= 2 allow weak-buy;
+            const aggressiveCoreOverrideBull = isSupertrendBullish && bullishScore >= 2 && atrRatio >= (MIN_ATR_RATIO * 0.5);
+            const aggressiveCoreOverrideBear = isSupertrendBearish && bearishScore >= 2 && atrRatio >= (MIN_ATR_RATIO * 0.5);
+
+            //console.log(bullishScore,MIN_WEIGHTED_SCORE,bullishHasCore,atrRatio,MIN_ATR_RATIO,aggressiveCoreOverrideBull);
+            //console.log(bearishScore,MIN_WEIGHTED_SCORE,bearishHasCore,atrRatio,MIN_ATR_RATIO,aggressiveCoreOverrideBear);
+            if ((bullishScore >= MIN_WEIGHTED_SCORE && bullishHasCore && atrRatio >= MIN_ATR_RATIO) || aggressiveCoreOverrideBull) {
+                data[i].signal.type = bullishScore >= (MIN_WEIGHTED_SCORE + 2) ? 'strong-buy' : 'weak-buy';
+                data[i].signal.source = `aggressive-weighted-${bullishScore}`;
+                data[i].signal.price = data[i].high;
+                data[i].signal.confidence = bullishScore;
+            } else if ((bearishScore >= MIN_WEIGHTED_SCORE && bearishHasCore && atrRatio >= MIN_ATR_RATIO) || aggressiveCoreOverrideBear) {
+                data[i].signal.type = bearishScore >= (MIN_WEIGHTED_SCORE + 2) ? 'strong-sell' : 'weak-sell';
+                data[i].signal.source = `aggressive-weighted-${bearishScore}`;
+                data[i].signal.price = data[i].low;
+                data[i].signal.confidence = bearishScore;
             }
 
-            // Set entry price (high for buys, low for sells)
-            if (data[i].signal.type) {
-                data[i].signal.price = data[i].signal.type.includes('buy') ? data[i].high : data[i].low;
-            }
+            // optional debug:
+            // Add this at the end of detectSignals() to log all signals
+            /*console.log('Detected signals:',
+                this.data.filter(d => d.signal && d.signal.type)
+                .map(d => ({
+                        time: new Date(d.time).toISOString(),
+                        type: d.signal.type,
+                        confidence: d.signal.confidence,
+                        price: d.signal.price
+                    })));*/
         }
-
-        const signals = data.filter(d => d.signal && d.signal.type);
-        /*console.log('Detected signals:', signals
-        .map(s => ({
-        time: new Date(s.time).toLocaleString(),
-        type: s.signal.type,
-        source: s.signal.source,
-        signalPrice: s.close,
-        executionPrice: s.signal.price
-        }))
-        .sort((a, b) => new Date(a.time) - new Date(b.time)));
-         */
     }
 
     updateChart() {
         if (!this.data || this.data.length === 0)
             return;
 
+        // Choose only the visible candles (modify if you have zoom/pan)
+        // Calculate dynamic y-axis scale
+        const visibleData = this.data.slice(-100); // Last 100 candles
+        const priceValues = visibleData.flatMap(d => [
+                    d.high, d.low,
+                    d.supertrendUpper || 0,
+                    d.supertrendLower || 0
+                ].filter(v => v !== null && v !== undefined));
+
+        const minPrice = Math.min(...priceValues);
+        const maxPrice = Math.max(...priceValues);
+        const margin = (maxPrice - minPrice) * 0.1; // 10% margin
+        const yMin = minPrice - margin;
+        const yMax = maxPrice + margin;
         // Main candlestick series with pattern colors
         const patternColors = {
             // Bullish patterns
@@ -1936,7 +2104,7 @@ class CandleChart {
                     })),
                 type: 'line',
                 color: '#00c176',
-                strokeWidth: 1.5
+                strokeWidth: 2
             };
 
             const supertrendLowerSeries = {
@@ -1947,11 +2115,10 @@ class CandleChart {
                     })),
                 type: 'line',
                 color: '#ff3b30',
-                strokeWidth: 1.5
+                strokeWidth: 2
             };
 
-            series.push(supertrendUpperSeries);
-            series.push(supertrendLowerSeries);
+            series.push(supertrendUpperSeries, supertrendLowerSeries);
         }
 
         // Only add Support/Resistance if enabled
@@ -1985,54 +2152,89 @@ class CandleChart {
         }
 
         // Signal markers - only show if indicators are enabled
+        // In updateChart(), modify the signal markers section:
+        // In updateChart() method, modify the signal markers section:
         const signalMarkers = this.data
-            .filter(d => d.signal && d.signal.type &&
-                ((this.indicators.supertrend.enabled && d.signal.type.includes('supertrend')) ||
-                    (this.indicators.rsi.enabled && d.signal.type.includes('rsi')) ||
-                    (this.indicators.macd.enabled && d.signal.type.includes('macd'))))
-            .map(d => {
-                const isBuy = d.signal.type.includes('buy');
-                return {
-                    x: new Date(d.time),
-                    y: isBuy ? d.low * 0.98 : d.high * 1.02,
-                    marker: {
-                        size: 10,
-                        fillColor: isBuy ? '#00c176' : '#ff3b30',
-                        strokeColor: '#fff',
-                        strokeWidth: 2,
-                        radius: 5,
-                        shape: isBuy ? 'triangle' : 'invertedTriangle',
-                        cssClass: 'apexcharts-candlestick-signal'
-                    },
-                    label: {
-                        text: d.signal.type.toUpperCase(),
-                        style: {
-                            color: '#fff',
-                            background: isBuy ? '#00c176' : '#ff3b30',
-                            fontSize: '12px',
-                            padding: {
-                                left: 8,
-                                right: 8,
-                                top: 4,
-                                bottom: 4
-                            }
-                        },
-                        offsetY: isBuy ? -25 : 25
+    .filter(d => d.signal && d.signal.type)
+    .map(d => {
+        const isBuy = d.signal.type.includes('buy');
+        // Position markers slightly above/below the candle
+        const yPosition = isBuy ? 
+            d.high * 1.002 : // Just above high for buys
+            d.low * 0.998;   // Just below low for sells
+
+        return {
+            x: new Date(d.time),
+            y: yPosition,
+            marker: {
+                size: 12,
+                fillColor: isBuy ? '#00c176' : '#ff3b30',
+                strokeColor: '#fff',
+                strokeWidth: 2,
+                radius: 6,
+                shape: isBuy ? 'triangle' : 'invertedTriangle',
+                cssClass: 'apexcharts-candlestick-signal'
+            },
+            label: {
+                text: `${d.signal.type.toUpperCase()}`,
+                style: {
+                    color: '#fff',
+                    background: isBuy ? '#00c176' : '#ff3b30',
+                    fontSize: '12px',
+                    padding: {
+                        left: 8,
+                        right: 8,
+                        top: 4,
+                        bottom: 4
                     }
-                };
-            });
+                },
+                offsetY: isBuy ? -25 : 25
+            }
+        };
+    });
+        const currentPrice = this.data[this.data.length - 1].close;
+        const priceLine = {
+            id: 'current-price-line',
+            y: currentPrice,
+            strokeDashArray: 0,
+            borderColor: '#3a7bd5',
+            borderWidth: 1,
+            label: {
+                borderColor: '#3a7bd5',
+                offsetY: 0,
+                offsetX: 20, // Add this to push the label slightly right of the line
+                style: {
+                    color: '#fff',
+                    background: '#3a7bd5'
+                },
+                text: `${currentPrice.toFixed(2)}`,
+                position: 'right',
+                textAnchor: 'start' // Ensures text aligns to the left of the label position
+            }
+        };
 
         // Update chart with all series and annotations
         this.chart.updateOptions({
+            yaxis: {
+                min: yMin,
+                max: yMax,
+                opposite: true, // <--- key line
+                labels: {
+                    formatter: function (val) {
+                        return val != null ? val.toFixed(2) : 0.0; // Always 2 decimals
+                    }
+                }
+            },
             series: series,
             annotations: {
+                yaxis: [priceLine],
                 points: [
                     ...signalMarkers,
                     ...(this.tradeMarkers || [])
                 ],
                 lines: this.tradeLines || []
             }
-        }, false, true, true);
+        }, false, true, true); // Note the last parameter is true to redraw
 
         // Update RSI and MACD charts if enabled
         if (this.indicators.rsi.enabled) {
