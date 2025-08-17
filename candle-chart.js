@@ -12,12 +12,15 @@ class CandleChart {
         this.previousPair = this.pair;
         this.executedSignals = new Set();
         this.signalMarkers = [];
+        this.tradeMarkers = [];
+        this.tradeLines = [];
 
         this.tradeSettings = {
-            stopLossPercent: 0.50, // 2% stop loss
-            takeProfitPercent: 1.25, // 5% take profit
+            stopLossPercent: 0.10, // 2% stop loss
+            takeProfitPercent: 0.25, // 5% take profit
             positionSizePercent: 10, // Risk 10% of virtual balance per trade
-            virtualBalance: 100000, // Starting virtual balance
+            virtualBalance: 25000, // Starting virtual balance
+            startingBalance: 25000,
             commission: 0.001, // 0.1% trading commission
             slippage: 0.001, // 0.5% price slippage
             dollerPrice: 93.0
@@ -103,7 +106,7 @@ class CandleChart {
 
                 // Validate and set virtual balance
                 const virtualBalance = parseFloat(tradeData.virtualBalance);
-                this.tradeSettings.virtualBalance = isNaN(virtualBalance) ? 100000 : virtualBalance;
+                this.tradeSettings.virtualBalance = isNaN(virtualBalance) ? 25000 : virtualBalance;
 
                 // Validate performance metrics
                 this.performanceMetrics = {
@@ -128,7 +131,7 @@ class CandleChart {
             // Reset to defaults if loading fails
             this.trades = [];
             this.currentPosition = null;
-            this.tradeSettings.virtualBalance = 100000;
+            this.tradeSettings.virtualBalance = 25000;
             this.executedSignals = new Set();
             this.performanceMetrics = {
                 totalTrades: 0,
@@ -152,7 +155,7 @@ class CandleChart {
 
         for (let i = 0; i < data.length; i++) {
             const candle = data[i];
-			//console.log(candle);
+            //console.log(candle);
             if (!candle.signal || !candle.signal.type)
                 continue;
 
@@ -234,7 +237,7 @@ class CandleChart {
                             // Adjust SL and TP - reduce by half from original distance
                             const originalSLDistance = (this.currentPosition.entryPrice - this.currentPosition.stopLoss);
                             const originalTPDistance = (this.currentPosition.takeProfit - this.currentPosition.entryPrice);
-
+							entryPrice=(currentPrice + this.currentPosition.entryPrice)/2;
                             this.currentPosition.stopLoss = this.currentPosition.entryPrice - (originalSLDistance * 0.5);
                             this.currentPosition.takeProfit = this.currentPosition.entryPrice + (originalTPDistance * 0.5);
 
@@ -292,7 +295,7 @@ class CandleChart {
 
                         // Changed: Deduct full cost for sell positions too
                         this.tradeSettings.virtualBalance -= (cost + commissionPaid);
-
+                        //console.log(this.tradeSettings.virtualBalance);
                         this.currentPosition = {
                             type: 'sell',
                             entryPrice: entryPrice,
@@ -317,14 +320,16 @@ class CandleChart {
                             const additionalCost = additionalSize * entryPrice;
                             const additionalCommission = additionalCost * this.tradeSettings.commission;
 
-                            this.currentPosition.positionSize += additionalSize;
+                            this.currentPosition.positionSize += (this.currentPosition.positionSize + additionalSize) / 2;
                             this.currentPosition.commissionPaid += additionalCommission;
-                            this.tradeSettings.virtualBalance += (additionalCost - additionalCommission);
+							//console.log(additionalCost,additionalCommission,this.tradeSettings.virtualBalance);
+                            this.tradeSettings.virtualBalance -= (additionalCost - additionalCommission);
 
                             // Adjust SL and TP - reduce by half from original distance
                             const originalSLDistance = (this.currentPosition.stopLoss - this.currentPosition.entryPrice);
                             const originalTPDistance = (this.currentPosition.entryPrice - this.currentPosition.takeProfit);
-
+							entryPrice=(currentPrice + this.currentPosition.entryPrice)/2;
+							this.currentPosition.entryPrice = entryPrice;
                             this.currentPosition.stopLoss = this.currentPosition.entryPrice + (originalSLDistance * 0.5);
                             this.currentPosition.takeProfit = this.currentPosition.entryPrice - (originalTPDistance * 0.5);
 
@@ -347,8 +352,8 @@ class CandleChart {
                     const cost = positionSize * entryPrice;
 
                     // Changed: Deduct full cost for sell positions too
-                    this.tradeSettings.virtualBalance -= (cost + commissionPaid);
-
+                    this.tradeSettings.virtualBalance = (this.tradeSettings.virtualBalance).toFixed(2) - (cost + commissionPaid).toFixed(2);
+                    //console.log(this.tradeSettings.virtualBalance);
                     this.currentPosition = {
                         type: 'sell',
                         entryPrice: entryPrice,
@@ -393,6 +398,8 @@ class CandleChart {
         const entryPrice = this.currentPosition.entryPrice;
         const entryCommissionPaid = this.currentPosition.commissionPaid || 0;
 
+		//console.log(399,exitReason);
+		//console.log(400,this.tradeSettings.virtualBalance);
         // Handle partial close for take profit (exit half quantity)
         if (exitReason === 'take profit') {
             const halfSize = posSize / 2;
@@ -407,7 +414,7 @@ class CandleChart {
             } else {
                 // For short position - return borrowed amount and settle PnL
                 pnlAmount = halfSize * (entryPrice - exitPrice);
-                this.tradeSettings.virtualBalance += pnlAmount - exitCommission;
+                this.tradeSettings.virtualBalance += (halfSize * exitPrice) - exitCommission;
             }
 
             const pnlPercent = (entryPrice > 0) ? (pnlAmount / (halfSize * entryPrice)) * 100 : 0;
@@ -463,16 +470,17 @@ class CandleChart {
         // Full position close for other exit reasons (stop loss, signal, etc.)
         const exitCommission = posSize * exitPrice * this.tradeSettings.commission;
         let pnlAmount = 0;
-
+		//console.log(471,this.tradeSettings.virtualBalance);
         if (isBuyPosition) {
             pnlAmount = posSize * (exitPrice - entryPrice);
-            this.tradeSettings.virtualBalance += (posSize * exitPrice) - exitCommission;
+            this.tradeSettings.virtualBalance += (posSize * entryPrice) + (pnlAmount * this.tradeSettings.dollerPrice) - exitCommission;
         } else {
             // For short position - return borrowed amount and settle PnL
             pnlAmount = posSize * (entryPrice - exitPrice);
-            this.tradeSettings.virtualBalance += (posSize * entryPrice) + pnlAmount - exitCommission;
+			//console.log(478,pnlAmount,posSize,exitPrice,exitCommission);
+            this.tradeSettings.virtualBalance += (posSize * entryPrice) + (pnlAmount * this.tradeSettings.dollerPrice) - exitCommission;
         }
-
+		//console.log(480,this.tradeSettings.virtualBalance);
         const pnlPercent = (entryPrice > 0) ? (pnlAmount / (posSize * entryPrice)) * 100 : 0;
 
         // Create trade record
@@ -516,7 +524,6 @@ class CandleChart {
 
     updatePerformanceMetrics() {
         if (!Array.isArray(this.trades) || this.trades.length === 0) {
-            // Reset metrics when no trades
             this.performanceMetrics = {
                 totalTrades: 0,
                 winningTrades: 0,
@@ -536,17 +543,16 @@ class CandleChart {
         let winningTrades = 0;
         let losingTrades = 0;
         let tradeDurations = [];
-        let equityCurve = [this.tradeSettings.virtualBalance]; // Starting balance
-        let peakEquity = this.tradeSettings.virtualBalance;
+
+        let startingBalance = this.tradeSettings.startingBalance || 25000;
+        let equityCurve = [startingBalance];
+        let peakEquity = startingBalance;
         let maxDrawdown = 0;
 
-        // Process trades in chronological order
-        const sortedTrades = [...this.trades].sort((a, b) =>
-            new Date(a.entryTime) - new Date(b.entryTime));
-
+        const sortedTrades = [...this.trades].sort((a, b) => new Date(a.entryTime) - new Date(b.entryTime));
+		//console.log(sortedTrades);
         sortedTrades.forEach(trade => {
-            // Calculate PnL in dollars
-            const pnlAmount = trade.pnlAmount * this.tradeSettings.dollerPrice;
+            const pnlAmount = trade.pnlAmount * this.tradeSettings.dollerPrice; // already signed
 
             if (pnlAmount >= 0) {
                 winningTrades++;
@@ -556,45 +562,33 @@ class CandleChart {
                 totalLoss += Math.abs(pnlAmount);
             }
 
-            // Update equity curve
             const currentEquity = equityCurve[equityCurve.length - 1] + pnlAmount;
             equityCurve.push(currentEquity);
 
-            // Update peak and drawdown
-            if (currentEquity > peakEquity) {
+            if (currentEquity > peakEquity)
                 peakEquity = currentEquity;
-            }
-            const drawdown = ((peakEquity - currentEquity) / peakEquity) * 100;
-            if (drawdown > maxDrawdown) {
-                maxDrawdown = drawdown;
-            }
 
-            // Calculate duration in hours
-            const duration = (new Date(trade.exitTime) - new Date(trade.entryTime)) / (1000 * 60 * 60);
-            tradeDurations.push(duration);
+            const drawdown = ((peakEquity - currentEquity) / peakEquity) * 100;
+            if (drawdown > maxDrawdown)
+                maxDrawdown = drawdown;
+
+            const durationHours = (new Date(trade.exitTime) - new Date(trade.entryTime)) / (1000 * 60 * 60);
+            tradeDurations.push(durationHours);
         });
 
         const totalTrades = sortedTrades.length;
         const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-
-        // Calculate profit factor (handle division by zero)
-        let profitFactor = 0;
-        if (totalLoss > 0) {
-            profitFactor = totalProfit / totalLoss;
-        } else if (totalProfit > 0) {
-            profitFactor = Infinity;
-        }
-
-        // Calculate average trade duration
-        const avgDuration = tradeDurations.length > 0 ?
-            tradeDurations.reduce((a, b) => a + b, 0) / tradeDurations.length : 0;
+        const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : (totalProfit > 0 ? Infinity : 0);
+        const avgDuration = tradeDurations.length > 0
+             ? tradeDurations.reduce((a, b) => a + b, 0) / tradeDurations.length
+             : 0;
 
         this.performanceMetrics = {
             totalTrades,
             winningTrades,
             losingTrades,
             winRate,
-            totalPnl: equityCurve[equityCurve.length - 1] - this.tradeSettings.virtualBalance,
+            totalPnl: equityCurve[equityCurve.length - 1] - startingBalance,
             maxDrawdown,
             profitFactor,
             averageTradeDuration: avgDuration
@@ -606,7 +600,6 @@ class CandleChart {
     updatePerformanceUI() {
         const metrics = this.performanceMetrics;
         const balance = this.tradeSettings.virtualBalance;
-
         // Format values properly
         document.getElementById('total-trades').textContent = metrics.totalTrades;
         document.getElementById('win-rate').textContent = metrics.winRate.toFixed(2) + '%';
@@ -831,7 +824,7 @@ class CandleChart {
 
     addTradeMarker(time, price, type, labelText) {
         // Define all possible marker types and their colors
-		//console.log('Adding trade marker:', { time, price, type, labelText });
+        //console.log('Adding trade marker:', { time, price, type, labelText });
         const colors = {
             'buy': {
                 bg: '#00c176',
@@ -1051,9 +1044,9 @@ class CandleChart {
             <td>${this.currentPosition.type.toUpperCase()}</td>
             <td>${this.currentPosition.entryPrice.toFixed(2)}<br>
                 <small>${new Date(this.currentPosition.entryTime).toLocaleString()}</small></td>
-            <td><em>Running...</em><br>
-                <small>Current: ${currentPrice.toFixed(2)}</small><br>
-                <small class="sl-info">SL: ${slPrice} (${slDistancePct}%)</small><br>
+            <td><em>Running...</em>
+                <small>Current: ${currentPrice.toFixed(2)}</small>
+                <small class="sl-info">SL: ${slPrice} (${slDistancePct}%)</small>
                 <small class="tp-info">TP: ${tpPrice} (${tpDistancePct}%)</small>
             </td>
             <td>${this.currentPosition.positionSize.toFixed(6)}</td>
@@ -1285,9 +1278,7 @@ class CandleChart {
                     </div>
                 </div>
                 <div style="font-size: 13px; opacity: 0.8; margin-bottom: 6px;">
-                    ${isEntry ? 'New position opened' : 'Position closed'} ${!isEntry ? `($ {
-                trade.exitReason
-            })` : ''}
+                    ${isEntry ? 'New position opened' : 'Position closed'} ${!isEntry ? trade.exitReason : ''}
                 </div>
                 <div style="display: flex; justify-content: space-between; font-size: 12px;">
                     <div style="opacity: 0.7;">${this.pair} • ${price.toFixed(2)}</div>
@@ -1578,7 +1569,7 @@ class CandleChart {
                 localStorage.removeItem(`tradeData_${this.pair}`);
                 this.trades = [];
                 this.currentPosition = null;
-                this.tradeSettings.virtualBalance = 100000;
+                this.tradeSettings.virtualBalance = 25000;
                 this.updatePerformanceMetrics();
                 this.updateTradeList();
                 this.updateChart();
@@ -1716,42 +1707,62 @@ class CandleChart {
 
         // Calculate ATR
         for (let i = period; i < data.length; i++) {
-            let sumTR = 0;
-            for (let j = i - period + 1; j <= i; j++) {
-                sumTR += data[j].tr;
+            // First ATR is simple average of first 'period' TR values
+            if (i === period) {
+                let sumTR = 0;
+                for (let j = 1; j <= period; j++) {
+                    sumTR += data[j].tr;
+                }
+                data[i].atr = sumTR / period;
             }
-            data[i].atr = sumTR / period;
+            // Subsequent ATR values use Wilder's smoothing method
+            else {
+                data[i].atr = ((data[i - 1].atr * (period - 1)) + data[i].tr) / period;
+            }
         }
 
-        // Calculate Supertrend with simplified logic
+        // Calculate Supertrend
         for (let i = period; i < data.length; i++) {
             const hl2 = (data[i].high + data[i].low) / 2;
-            const basicUpper = hl2 + multiplier * data[i].atr;
-            const basicLower = hl2 - multiplier * data[i].atr;
+            const basicUpper = hl2 + (multiplier * data[i].atr);
+            const basicLower = hl2 - (multiplier * data[i].atr);
 
+            // Initialize first value
             if (i === period) {
-                // Initialize
                 data[i].supertrendUpper = basicUpper;
                 data[i].supertrendLower = basicLower;
                 data[i].supertrendDirection = data[i].close > basicUpper ? 'up' : 'down';
+                continue;
+            }
+
+            // Current upper band
+            if (data[i - 1].supertrendDirection === 'up') {
+                data[i].supertrendUpper = Math.min(basicUpper, data[i - 1].supertrendUpper);
             } else {
-                // Final upper band
-                data[i].supertrendUpper = data[i - 1].supertrendDirection === 'up'
-                     ? Math.max(basicUpper, data[i - 1].supertrendUpper)
-                     : basicUpper;
+                data[i].supertrendUpper = basicUpper;
+            }
 
-                // Final lower band
-                data[i].supertrendLower = data[i - 1].supertrendDirection === 'down'
-                     ? Math.min(basicLower, data[i - 1].supertrendLower)
-                     : basicLower;
+            // Current lower band
+            if (data[i - 1].supertrendDirection === 'down') {
+                data[i].supertrendLower = Math.max(basicLower, data[i - 1].supertrendLower);
+            } else {
+                data[i].supertrendLower = basicLower;
+            }
 
-                // Simplified direction change logic
-                if (data[i].close > data[i].supertrendUpper) {
-                    data[i].supertrendDirection = 'up';
-                } else if (data[i].close < data[i].supertrendLower) {
-                    data[i].supertrendDirection = 'down';
+            // Determine direction
+            if (data[i].close > data[i].supertrendUpper) {
+                data[i].supertrendDirection = 'up';
+            } else if (data[i].close < data[i].supertrendLower) {
+                data[i].supertrendDirection = 'down';
+            } else {
+                // Maintain previous direction
+                data[i].supertrendDirection = data[i - 1].supertrendDirection;
+
+                // Adjust bands to be more responsive
+                if (data[i].supertrendDirection === 'up') {
+                    data[i].supertrendLower = Math.max(data[i].supertrendLower, data[i - 1].supertrendLower);
                 } else {
-                    data[i].supertrendDirection = data[i - 1].supertrendDirection;
+                    data[i].supertrendUpper = Math.min(data[i].supertrendUpper, data[i - 1].supertrendUpper);
                 }
             }
         }
@@ -2009,13 +2020,13 @@ class CandleChart {
             // optional debug:
             // Add this at the end of detectSignals() to log all signals
             /*console.log('Detected signals:',
-                this.data.filter(d => d.signal && d.signal.type)
-                .map(d => ({
-                        time: new Date(d.time).toISOString(),
-                        type: d.signal.type,
-                        confidence: d.signal.confidence,
-                        price: d.signal.price
-                    })));*/
+            this.data.filter(d => d.signal && d.signal.type)
+            .map(d => ({
+            time: new Date(d.time).toISOString(),
+            type: d.signal.type,
+            confidence: d.signal.confidence,
+            price: d.signal.price
+            })));*/
         }
     }
 
@@ -2155,43 +2166,43 @@ class CandleChart {
         // In updateChart(), modify the signal markers section:
         // In updateChart() method, modify the signal markers section:
         const signalMarkers = this.data
-    .filter(d => d.signal && d.signal.type)
-    .map(d => {
-        const isBuy = d.signal.type.includes('buy');
-        // Position markers slightly above/below the candle
-        const yPosition = isBuy ? 
-            d.high * 1.002 : // Just above high for buys
-            d.low * 0.998;   // Just below low for sells
+            .filter(d => d.signal && d.signal.type)
+            .map(d => {
+                const isBuy = d.signal.type.includes('buy');
+                // Position markers slightly above/below the candle
+                const yPosition = isBuy ?
+                    d.high * 1.002 : // Just above high for buys
+                    d.low * 0.998; // Just below low for sells
 
-        return {
-            x: new Date(d.time),
-            y: yPosition,
-            marker: {
-                size: 12,
-                fillColor: isBuy ? '#00c176' : '#ff3b30',
-                strokeColor: '#fff',
-                strokeWidth: 2,
-                radius: 6,
-                shape: isBuy ? 'triangle' : 'invertedTriangle',
-                cssClass: 'apexcharts-candlestick-signal'
-            },
-            label: {
-                text: `${d.signal.type.toUpperCase()}`,
-                style: {
-                    color: '#fff',
-                    background: isBuy ? '#00c176' : '#ff3b30',
-                    fontSize: '12px',
-                    padding: {
-                        left: 8,
-                        right: 8,
-                        top: 4,
-                        bottom: 4
+                return {
+                    x: new Date(d.time),
+                    y: yPosition,
+                    marker: {
+                        size: 12,
+                        fillColor: isBuy ? '#00c176' : '#ff3b30',
+                        strokeColor: '#fff',
+                        strokeWidth: 2,
+                        radius: 6,
+                        shape: isBuy ? 'triangle' : 'invertedTriangle',
+                        cssClass: 'apexcharts-candlestick-signal'
+                    },
+                    label: {
+                        text: `${d.signal.type.toUpperCase()}`,
+                        style: {
+                            color: '#fff',
+                            background: isBuy ? '#00c176' : '#ff3b30',
+                            fontSize: '12px',
+                            padding: {
+                                left: 8,
+                                right: 8,
+                                top: 4,
+                                bottom: 4
+                            }
+                        },
+                        offsetY: isBuy ? -25 : 25
                     }
-                },
-                offsetY: isBuy ? -25 : 25
-            }
-        };
-    });
+                };
+            });
         const currentPrice = this.data[this.data.length - 1].close;
         const priceLine = {
             id: 'current-price-line',
