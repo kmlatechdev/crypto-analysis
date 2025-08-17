@@ -394,137 +394,134 @@ class CandleChart {
     }
 
     async closePosition(candle, candleIndex, exitPrice, exitReason) {
-        if (!this.currentPosition)
-            return;
+    if (!this.currentPosition) return;
 
-        const isBuyPosition = this.currentPosition.type === 'buy';
-        const posSize = this.currentPosition.positionSize;
-        const entryPrice = this.currentPosition.entryPrice;
-        const entryCommissionPaid = this.currentPosition.commissionPaid || 0;
+    const isBuyPosition = this.currentPosition.type === 'buy';
+    const posSize = this.currentPosition.positionSize;
+    const entryPrice = this.currentPosition.entryPrice;
+    const entryCommissionPaid = this.currentPosition.commissionPaid || 0;
 
-		console.log(405,exitReason);
-		console.log(406,this.tradeSettings.virtualBalance);
-        // Handle partial close for take profit (exit half quantity)
-        if (exitReason === 'take profit') {
-            const halfSize = posSize / 2;
-            const exitCommission = halfSize * exitPrice * this.tradeSettings.commission;
+    // Handle partial close for take profit (exit half quantity)
+    if (exitReason === 'take profit') {
+        const halfSize = posSize / 2;
+        const exitCommission = halfSize * exitPrice * this.tradeSettings.commission;
 
-            // Calculate PnL for the half position
-            let pnlAmount = 0;
-            if (isBuyPosition) {
-                // For long position
-                pnlAmount = halfSize * (exitPrice - entryPrice);
-                this.tradeSettings.virtualBalance += (halfSize * exitPrice) - exitCommission;
-            } else {
-                // For short position - return borrowed amount and settle PnL
-                pnlAmount = halfSize * (entryPrice - exitPrice);
-                this.tradeSettings.virtualBalance += (halfSize * exitPrice) - exitCommission;
-            }
-			console.log(423,this.tradeSettings.virtualBalance);
-            const pnlPercent = (entryPrice > 0) ? (pnlAmount / (halfSize * entryPrice)) * 100 : 0;
-
-            // Create trade record for the half position
-            const trade = {
-                type: this.currentPosition.type,
-                entryPrice: entryPrice,
-                exitPrice: exitPrice,
-                pnlPercent: pnlPercent,
-                pnlAmount: pnlAmount,
-                positionSize: halfSize,
-                entryTime: this.currentPosition.entryTime,
-                entryCandleIndex: this.currentPosition.entryCandleIndex,
-                exitTime: candle.time,
-                exitReason: 'partial take profit',
-                commissions: (entryCommissionPaid * 0.5) + exitCommission,
-                virtualBalanceAfter: this.tradeSettings.virtualBalance
-            };
-
-            this.trades.push(trade);
-
-            // Reduce the current position size by half
-            this.currentPosition.positionSize = halfSize;
-            this.currentPosition.commissionPaid = entryCommissionPaid * 0.5;
-
-            // Show notification & visuals
-            this.showTradeNotification(trade, false);
-            this.addTradeMarker(candle.time, exitPrice, 'take-profit',
-`PARTIAL TP @ ${exitPrice.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)`);
-
-            // Add trade line for the partial close
-            this.addTradeLine({
-                entryPrice: entryPrice,
-                entryTime: this.currentPosition.entryTime,
-                entryCandleIndex: this.currentPosition.entryCandleIndex,
-                positionSize: halfSize
-            }, candle, exitPrice);
-
-            // Update the take profit level for remaining position
-            if (isBuyPosition) {
-                this.currentPosition.takeProfit = exitPrice * 1.01; // Move TP 1% higher for remaining position
-            } else {
-                this.currentPosition.takeProfit = exitPrice * 0.99; // Move TP 1% lower for remaining position
-            }
-
-            this.updateTradeList();
-            this.updatePerformanceMetrics();
-            this.saveTradeData();
-            return;
-        }
-
-        // Full position close for other exit reasons (stop loss, signal, etc.)
-        const exitCommission = posSize * exitPrice * this.tradeSettings.commission;
+        // Calculate PnL for the half position
         let pnlAmount = 0;
-		//console.log(471,this.tradeSettings.virtualBalance);
         if (isBuyPosition) {
-            pnlAmount = posSize * (exitPrice - entryPrice);
-            this.tradeSettings.virtualBalance += (posSize * entryPrice) + (pnlAmount * this.tradeSettings.dollerPrice) - exitCommission;
+            // For long position
+            pnlAmount = halfSize * (exitPrice - entryPrice) * this.tradeSettings.dollerPrice;
+            this.tradeSettings.virtualBalance += (halfSize * exitPrice) - exitCommission;
         } else {
             // For short position - return borrowed amount and settle PnL
-            pnlAmount = posSize * (entryPrice - exitPrice);
-			//console.log(478,pnlAmount,posSize,exitPrice,exitCommission);
-            this.tradeSettings.virtualBalance += (posSize * entryPrice) + (pnlAmount * this.tradeSettings.dollerPrice) - exitCommission;
+            pnlAmount = halfSize * (entryPrice - exitPrice) * this.tradeSettings.dollerPrice;
+            this.tradeSettings.virtualBalance += (halfSize * entryPrice) + pnlAmount - exitCommission;
         }
-		//console.log(480,this.tradeSettings.virtualBalance);
-        const pnlPercent = (entryPrice > 0) ? (pnlAmount / (posSize * entryPrice)) * 100 : 0;
 
-        // Create trade record
+        const pnlPercent = (entryPrice > 0) ? (pnlAmount / (halfSize * entryPrice * this.tradeSettings.dollerPrice)) * 100 : 0;
+
+        // Create trade record for the half position
         const trade = {
             type: this.currentPosition.type,
             entryPrice: entryPrice,
             exitPrice: exitPrice,
             pnlPercent: pnlPercent,
             pnlAmount: pnlAmount,
-            positionSize: posSize,
+            positionSize: halfSize,
             entryTime: this.currentPosition.entryTime,
             entryCandleIndex: this.currentPosition.entryCandleIndex,
             exitTime: candle.time,
-            exitReason: exitReason,
-            commissions: (entryCommissionPaid || 0) + exitCommission,
+            exitReason: 'partial take profit',
+            commissions: (entryCommissionPaid * 0.5) + exitCommission,
             virtualBalanceAfter: this.tradeSettings.virtualBalance
         };
 
         this.trades.push(trade);
-        const positionSnapshot = {
-            entryPrice: trade.entryPrice,
-            entryTime: trade.entryTime,
-            entryCandleIndex: trade.entryCandleIndex,
-            positionSize: trade.positionSize
-        };
 
+        // Reduce the current position size by half
+        this.currentPosition.positionSize = halfSize;
+        this.currentPosition.commissionPaid = entryCommissionPaid * 0.5;
+
+        // Show notification & visuals
         this.showTradeNotification(trade, false);
-        const markerType = exitReason === 'take profit' ? 'take-profit' :
-            exitReason === 'stop loss' ? 'stop-loss' : 'sell';
-        const labelText = `${exitReason.toUpperCase()} @ ${exitPrice.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)`;
-        this.addTradeMarker(candle.time, exitPrice, markerType, labelText);
-        this.addTradeLine(positionSnapshot, candle, exitPrice);
+        this.addTradeMarker(candle.time, exitPrice, 'take-profit',
+            `PARTIAL TP @ ${exitPrice.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)`);
 
-        // Clear position
-        this.currentPosition = null;
+        // Add trade line for the partial close
+        this.addTradeLine({
+            entryPrice: entryPrice,
+            entryTime: this.currentPosition.entryTime,
+            entryCandleIndex: this.currentPosition.entryCandleIndex,
+            positionSize: halfSize
+        }, candle, exitPrice);
+
+        // Update the take profit level for remaining position
+        if (isBuyPosition) {
+            this.currentPosition.takeProfit = exitPrice * 1.01; // Move TP 1% higher for remaining position
+        } else {
+            this.currentPosition.takeProfit = exitPrice * 0.99; // Move TP 1% lower for remaining position
+        }
 
         this.updateTradeList();
         this.updatePerformanceMetrics();
         this.saveTradeData();
+        return;
     }
+
+    // Full position close for other exit reasons (stop loss, signal, etc.)
+    const exitCommission = posSize * exitPrice * this.tradeSettings.commission;
+    let pnlAmount = 0;
+    
+    if (isBuyPosition) {
+        // For long position
+        pnlAmount = posSize * (exitPrice - entryPrice) * this.tradeSettings.dollerPrice;
+        this.tradeSettings.virtualBalance += (posSize * entryPrice) + pnlAmount - exitCommission;
+    } else {
+        // For short position - return borrowed amount and settle PnL
+        pnlAmount = posSize * (entryPrice - exitPrice) * this.tradeSettings.dollerPrice;
+        this.tradeSettings.virtualBalance += (posSize * entryPrice) + pnlAmount - exitCommission;
+    }
+
+    const pnlPercent = (entryPrice > 0) ? (pnlAmount / (posSize * entryPrice * this.tradeSettings.dollerPrice)) * 100 : 0;
+
+    // Create trade record
+    const trade = {
+        type: this.currentPosition.type,
+        entryPrice: entryPrice,
+        exitPrice: exitPrice,
+        pnlPercent: pnlPercent,
+        pnlAmount: pnlAmount,
+        positionSize: posSize,
+        entryTime: this.currentPosition.entryTime,
+        entryCandleIndex: this.currentPosition.entryCandleIndex,
+        exitTime: candle.time,
+        exitReason: exitReason,
+        commissions: (entryCommissionPaid || 0) + exitCommission,
+        virtualBalanceAfter: this.tradeSettings.virtualBalance
+    };
+
+    this.trades.push(trade);
+    const positionSnapshot = {
+        entryPrice: trade.entryPrice,
+        entryTime: trade.entryTime,
+        entryCandleIndex: trade.entryCandleIndex,
+        positionSize: trade.positionSize
+    };
+
+    this.showTradeNotification(trade, false);
+    const markerType = exitReason === 'take profit' ? 'take-profit' :
+        exitReason === 'stop loss' ? 'stop-loss' : 'sell';
+    const labelText = `${exitReason.toUpperCase()} @ ${exitPrice.toFixed(2)} (${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%)`;
+    this.addTradeMarker(candle.time, exitPrice, markerType, labelText);
+    this.addTradeLine(positionSnapshot, candle, exitPrice);
+
+    // Clear position
+    this.currentPosition = null;
+
+    this.updateTradeList();
+    this.updatePerformanceMetrics();
+    this.saveTradeData();
+}
 
     updatePerformanceMetrics() {
         if (!Array.isArray(this.trades) || this.trades.length === 0) {
