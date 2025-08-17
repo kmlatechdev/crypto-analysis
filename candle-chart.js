@@ -221,7 +221,7 @@ class CandleChart {
                         this.addTradeMarker(candle.time, entryPrice, 'buy', `BUY @ ${entryPrice.toFixed(2)}`);
                     }
                     // Currently long -> consider adding only if stronger AND in profit
-                    else if (this.currentPosition.type === 'buy') {
+                    else if (this.currentPosition.type === 'not buy') {
                         const currentPrice = candle.close;
                         const profitPercent = ((currentPrice - this.currentPosition.entryPrice) / this.currentPosition.entryPrice) * 100;
 
@@ -312,7 +312,7 @@ class CandleChart {
                         this.addTradeMarker(candle.time, entryPrice, 'sell', 'SELL');
                     }
                     // Currently short -> consider adding only if stronger AND in profit
-                    else if (this.currentPosition.type === 'sell') {
+                    else if (this.currentPosition.type === 'not sell') {
                         const currentPrice = candle.close;
                         const profitPercent = ((this.currentPosition.entryPrice - currentPrice) / this.currentPosition.entryPrice) * 100;
 
@@ -402,7 +402,7 @@ class CandleChart {
     const entryCommissionPaid = this.currentPosition.commissionPaid || 0;
 
     // Handle partial close for take profit (exit half quantity)
-    if (exitReason === 'take profit') {
+    if (exitReason === 'not take profit') {
         const halfSize = posSize / 2;
         const exitCommission = halfSize * exitPrice * this.tradeSettings.commission;
 
@@ -524,79 +524,82 @@ class CandleChart {
 }
 
     updatePerformanceMetrics() {
-        if (!Array.isArray(this.trades) || this.trades.length === 0) {
-            this.performanceMetrics = {
-                totalTrades: 0,
-                winningTrades: 0,
-                losingTrades: 0,
-                winRate: 0,
-                totalPnl: 0,
-                maxDrawdown: 0,
-                profitFactor: 0,
-                averageTradeDuration: 0
-            };
-            this.updatePerformanceUI();
-            return;
+    if (!Array.isArray(this.trades) || this.trades.length === 0) {
+        this.performanceMetrics = {
+            totalTrades: 0,
+            winningTrades: 0,
+            losingTrades: 0,
+            winRate: 0,
+            totalPnl: 0,
+            maxDrawdown: 0,
+            profitFactor: 0,
+            averageTradeDuration: 0
+        };
+        this.updatePerformanceUI();
+        return;
+    }
+
+    let totalProfit = 0;
+    let totalLoss = 0;
+    let winningTrades = 0;
+    let losingTrades = 0;
+    let tradeDurations = [];
+
+    let startingBalance = this.tradeSettings.startingBalance || 25000;
+    let equityCurve = [startingBalance];
+    let peakEquity = startingBalance;
+    let maxDrawdown = 0;
+
+    const sortedTrades = [...this.trades].sort((a, b) => new Date(a.entryTime) - new Date(b.entryTime));
+
+    sortedTrades.forEach(trade => {
+        // Remove the dollar price multiplication here since pnlAmount is already in dollars
+        const pnlAmount = trade.pnlAmount; 
+        
+        if (pnlAmount >= 0) {
+            winningTrades++;
+            totalProfit += pnlAmount;
+        } else {
+            losingTrades++;
+            totalLoss += Math.abs(pnlAmount);
         }
 
-        let totalProfit = 0;
-        let totalLoss = 0;
-        let winningTrades = 0;
-        let losingTrades = 0;
-        let tradeDurations = [];
+        const currentEquity = equityCurve[equityCurve.length - 1] + pnlAmount;
+        equityCurve.push(currentEquity);
 
-        let startingBalance = this.tradeSettings.startingBalance || 25000;
-        let equityCurve = [startingBalance];
-        let peakEquity = startingBalance;
-        let maxDrawdown = 0;
+        if (currentEquity > peakEquity) {
+            peakEquity = currentEquity;
+        }
 
-        const sortedTrades = [...this.trades].sort((a, b) => new Date(a.entryTime) - new Date(b.entryTime));
-		//console.log(sortedTrades);
-        sortedTrades.forEach(trade => {
-            const pnlAmount = trade.pnlAmount * this.tradeSettings.dollerPrice; // already signed
+        const drawdown = ((peakEquity - currentEquity) / peakEquity) * 100;
+        if (drawdown > maxDrawdown) {
+            maxDrawdown = drawdown;
+        }
 
-            if (pnlAmount >= 0) {
-                winningTrades++;
-                totalProfit += pnlAmount;
-            } else {
-                losingTrades++;
-                totalLoss += Math.abs(pnlAmount);
-            }
+        const durationHours = (new Date(trade.exitTime) - new Date(trade.entryTime)) / (1000 * 60 * 60);
+        tradeDurations.push(durationHours);
+    });
 
-            const currentEquity = equityCurve[equityCurve.length - 1] + pnlAmount;
-            equityCurve.push(currentEquity);
+    const totalTrades = sortedTrades.length;
+    const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
+    const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : (totalProfit > 0 ? Infinity : 0);
+    const avgDuration = tradeDurations.length > 0
+         ? tradeDurations.reduce((a, b) => a + b, 0) / tradeDurations.length
+         : 0;
 
-            if (currentEquity > peakEquity)
-                peakEquity = currentEquity;
+    this.performanceMetrics = {
+        totalTrades,
+        winningTrades,
+        losingTrades,
+        winRate,
+        totalPnl: equityCurve[equityCurve.length - 1] - startingBalance,
+        maxDrawdown,
+        profitFactor,
+        averageTradeDuration: avgDuration
+    };
 
-            const drawdown = ((peakEquity - currentEquity) / peakEquity) * 100;
-            if (drawdown > maxDrawdown)
-                maxDrawdown = drawdown;
-
-            const durationHours = (new Date(trade.exitTime) - new Date(trade.entryTime)) / (1000 * 60 * 60);
-            tradeDurations.push(durationHours);
-        });
-
-        const totalTrades = sortedTrades.length;
-        const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;
-        const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : (totalProfit > 0 ? Infinity : 0);
-        const avgDuration = tradeDurations.length > 0
-             ? tradeDurations.reduce((a, b) => a + b, 0) / tradeDurations.length
-             : 0;
-
-        this.performanceMetrics = {
-            totalTrades,
-            winningTrades,
-            losingTrades,
-            winRate,
-            totalPnl: equityCurve[equityCurve.length - 1] - startingBalance,
-            maxDrawdown,
-            profitFactor,
-            averageTradeDuration: avgDuration
-        };
-
-        this.updatePerformanceUI();
-    }
+    this.updatePerformanceUI();
+}
 
     updatePerformanceUI() {
         const metrics = this.performanceMetrics;
@@ -1000,7 +1003,7 @@ class CandleChart {
         <td>${trade.exitPrice.toFixed(2)}${exitReason}<br>
             <small>${new Date(trade.exitTime).toLocaleString()}</small></td>
         <td>${trade.positionSize.toFixed(6)}</td>
-        <td class="${pnlClass}">${trade.pnlAmount >= 0 ? '+' : ''}${(trade.pnlAmount * this.tradeSettings.dollerPrice).toFixed(2)}</td>
+        <td class="${pnlClass}">${trade.pnlAmount >= 0 ? '+' : ''}${(trade.pnlAmount).toFixed(2)}</td>
         <td class="${pnlClass}">${trade.pnlPercent >= 0 ? '+' : ''}${trade.pnlPercent.toFixed(2)}%</td>
         <td>${Math.floor(durationMinutes)} mins</td>
     `;
