@@ -235,9 +235,10 @@ class CandleChart {
                             this.tradeSettings.virtualBalance -= (additionalCost + additionalCommission);
 
                             // Adjust SL and TP - reduce by half from original distance
+							this.currentPosition.entryPrice = (currentPrice + this.currentPosition.entryPrice)/2;
                             const originalSLDistance = (this.currentPosition.entryPrice - this.currentPosition.stopLoss);
                             const originalTPDistance = (this.currentPosition.takeProfit - this.currentPosition.entryPrice);
-							entryPrice=(currentPrice + this.currentPosition.entryPrice)/2;
+							
                             this.currentPosition.stopLoss = this.currentPosition.entryPrice - (originalSLDistance * 0.5);
                             this.currentPosition.takeProfit = this.currentPosition.entryPrice + (originalTPDistance * 0.5);
 
@@ -245,7 +246,7 @@ class CandleChart {
 
                             this.showTradeNotification({
                                 type: 'buy',
-                                entryPrice: entryPrice,
+                                entryPrice: this.currentPosition.entryPrice,
                                 positionSize: additionalSize,
                                 action: 'added (in profit)'
                             }, true);
@@ -326,18 +327,21 @@ class CandleChart {
                             this.tradeSettings.virtualBalance -= (additionalCost - additionalCommission);
 
                             // Adjust SL and TP - reduce by half from original distance
+							this.currentPosition.entryPrice = (currentPrice + this.currentPosition.entryPrice)/2;
                             const originalSLDistance = (this.currentPosition.stopLoss - this.currentPosition.entryPrice);
                             const originalTPDistance = (this.currentPosition.entryPrice - this.currentPosition.takeProfit);
-							entryPrice=(currentPrice + this.currentPosition.entryPrice)/2;
-							this.currentPosition.entryPrice = entryPrice;
+							
                             this.currentPosition.stopLoss = this.currentPosition.entryPrice + (originalSLDistance * 0.5);
                             this.currentPosition.takeProfit = this.currentPosition.entryPrice - (originalTPDistance * 0.5);
-
+							
+							//console.log(this.currentPosition.entryPrice);
+							//console.log(this.currentPosition.stopLoss,originalSLDistance);
+							//console.log(this.currentPosition.takeProfit,originalTPDistance);
                             this.currentPosition.signalConfidence = newStrength;
 
                             this.showTradeNotification({
                                 type: 'sell',
-                                entryPrice: entryPrice,
+                                entryPrice: this.currentPosition.entryPrice,
                                 positionSize: additionalSize,
                                 action: 'added (in profit)'
                             }, true);
@@ -398,8 +402,8 @@ class CandleChart {
         const entryPrice = this.currentPosition.entryPrice;
         const entryCommissionPaid = this.currentPosition.commissionPaid || 0;
 
-		//console.log(399,exitReason);
-		//console.log(400,this.tradeSettings.virtualBalance);
+		console.log(405,exitReason);
+		console.log(406,this.tradeSettings.virtualBalance);
         // Handle partial close for take profit (exit half quantity)
         if (exitReason === 'take profit') {
             const halfSize = posSize / 2;
@@ -416,7 +420,7 @@ class CandleChart {
                 pnlAmount = halfSize * (entryPrice - exitPrice);
                 this.tradeSettings.virtualBalance += (halfSize * exitPrice) - exitCommission;
             }
-
+			console.log(423,this.tradeSettings.virtualBalance);
             const pnlPercent = (entryPrice > 0) ? (pnlAmount / (halfSize * entryPrice)) * 100 : 0;
 
             // Create trade record for the half position
