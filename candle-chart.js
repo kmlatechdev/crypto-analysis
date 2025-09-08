@@ -16,8 +16,8 @@ class CandleChart {
         this.tradeLines = [];
 
         this.tradeSettings = {
-            stopLossPercent: 0.10, // 2% stop loss
-            takeProfitPercent: 0.25, // 5% take profit
+            stopLossPercent: 0.40, // 2% stop loss
+            takeProfitPercent: 0.80, // 5% take profit
             positionSizePercent: 10, // Risk 10% of virtual balance per trade
             virtualBalance: 25000, // Starting virtual balance
             startingBalance: 25000,
@@ -2855,4 +2855,5 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
 });
+
 
