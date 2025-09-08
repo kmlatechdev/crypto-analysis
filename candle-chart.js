@@ -2010,12 +2010,12 @@ class CandleChart {
             //console.log(bullishScore,MIN_WEIGHTED_SCORE,bullishHasCore,atrRatio,MIN_ATR_RATIO,aggressiveCoreOverrideBull);
             //console.log(bearishScore,MIN_WEIGHTED_SCORE,bearishHasCore,atrRatio,MIN_ATR_RATIO,aggressiveCoreOverrideBear);
             if ((bullishScore >= MIN_WEIGHTED_SCORE && bullishHasCore && atrRatio >= MIN_ATR_RATIO) || aggressiveCoreOverrideBull) {
-                data[i].signal.type = bullishScore >= (MIN_WEIGHTED_SCORE + 2) ? 'strong-buy' : 'weak-buy';
+                data[i].signal.type = bullishScore >= (MIN_WEIGHTED_SCORE + 2) ? 'strong-sell' : 'weak-sell';
                 data[i].signal.source = `aggressive-weighted-${bullishScore}`;
                 data[i].signal.price = data[i].high;
                 data[i].signal.confidence = bullishScore;
             } else if ((bearishScore >= MIN_WEIGHTED_SCORE && bearishHasCore && atrRatio >= MIN_ATR_RATIO) || aggressiveCoreOverrideBear) {
-                data[i].signal.type = bearishScore >= (MIN_WEIGHTED_SCORE + 2) ? 'strong-sell' : 'weak-sell';
+                data[i].signal.type = bearishScore >= (MIN_WEIGHTED_SCORE + 2) ? 'strong-buy' : 'weak-buy';
                 data[i].signal.source = `aggressive-weighted-${bearishScore}`;
                 data[i].signal.price = data[i].low;
                 data[i].signal.confidence = bearishScore;
@@ -2855,3 +2855,4 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
 });
+
