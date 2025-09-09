@@ -197,6 +197,8 @@ class CandleChart {
                 if (this.currentPosition) {
                     // Currently short -> close short then open long
                     if (this.currentPosition.type === 'sell') {
+					const currentStrength = this.currentPosition.signalConfidence || 0;
+						if (newStrength > currentStrength) {
                         const exitPrice = candle.signal.price;
                         this.closePosition(candle, i, exitPrice, 'signal');
 
@@ -220,6 +222,7 @@ class CandleChart {
                         this.showTradeNotification(this.currentPosition, true);
                         this.addTradeMarker(candle.time, entryPrice, 'buy', `BUY @ ${entryPrice.toFixed(2)}`);
                     }
+					}
                     // Currently long -> consider adding only if stronger AND in profit
                     else if (this.currentPosition.type === 'not buy') {
                         const currentPrice = candle.close;
@@ -286,6 +289,8 @@ class CandleChart {
                 if (this.currentPosition) {
                     // Currently long -> close long then open short
                     if (this.currentPosition.type === 'buy') {
+					const currentStrength = this.currentPosition.signalConfidence || 0;
+						if (newStrength > currentStrength) {
                         const exitPrice = candle.signal.price;
                         this.closePosition(candle, i, exitPrice, 'signal');
 
@@ -310,6 +315,7 @@ class CandleChart {
                         };
                         this.showTradeNotification(this.currentPosition, true);
                         this.addTradeMarker(candle.time, entryPrice, 'sell', 'SELL');
+						}
                     }
                     // Currently short -> consider adding only if stronger AND in profit
                     else if (this.currentPosition.type === 'not sell') {
@@ -2855,6 +2861,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
 });
+
 
 
 
